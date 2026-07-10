@@ -11,7 +11,8 @@
     "dev": "concurrently -k \"npm:dev:vite\" \"npm:dev:electron\"",
     "build:vite": "vite build",
     "build": "npm run build:vite && electron-builder",
-    "dist:win": "npm run build:vite && electron-builder --win"
+    "dist:win": "npm run build:vite && electron-builder --win",
+    "claude-schedule": "node claude-scheduler.js"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
@@ -28,6 +29,7 @@
     "dotenv": "^16.4.5",
     "edge-tts": "^1.0.1",
     "node-edge-tts": "^1.2.10",
+    "playwright": "^1.61.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "ws": "^8.21.0"

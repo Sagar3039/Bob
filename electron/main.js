@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, ipcMain, globalShortcut, screen, shell } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, globalShortcut, screen, shell, clipboard } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -73,13 +73,8 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - You can speak aloud using Edge TTS (Microsoft's text-to-speech). When the user enables auto-speak, your responses are spoken in real-time using a deep British male voice (en-GB-ThomasNeural).
 - You can listen: the user can speak to you via microphone. You receive their speech as text (converted by Whisper STT).
 - You remember things across conversations. Past conversations are stored and you can recall facts, stories, goals, and preferences from them. When the user asks "what did we talk about before" or references a past topic, you have access to that context.
-- You have external tool access via Composio — including GitHub, Gmail, Google Tasks, Google Drive, Google Calendar, Notion, and LinkedIn. When you need to use a tool, respond with [TOOL_CALL: TOOL_NAME({...})] and the system will execute it for you.
-- Tool slugs are UPPERCASE_SNAKE_CASE (e.g., GOOGLESUPER_INSERT_TASK, GMAIL_SEND_EMAIL, GITHUB_CREATE_ISSUE). Always use the exact slug format from the tool list.
-- When using a tool, you MUST include all REQUIRED parameters. Common required params: title (for tasks), recipient_email (for emails), subject/body (for emails). Optional params like "due" can be added if the user specifies.
-- Example: To create a task named "DSA" due July 20, output: [TOOL_CALL: GOOGLESUPER_INSERT_TASK({"title": "DSA", "due": "2026-07-20", "tasklist_id": "@default"})]
-- When the user asks "what tools do you have" or "show me your tools", list ONLY the service names (GitHub, Gmail, LinkedIn, etc.) with a brief description. Do NOT list individual tool slugs unless specifically asked.
-- When the user asks about a specific service (e.g. "what can you do with gmail?"), list the available tools for that service with their required and optional parameters.
-- If a tool fails because the service is not connected, ask the user for confirmation to connect it before proceeding.
+- You have external tool access via Composio — including GitHub, Gmail, Google Tasks, Google Drive, Google Calendar, Notion, and LinkedIn, plus any additional service Composio supports if the user asks for it and confirms connecting it. When you need to use a tool, respond with [TOOL_CALL: TOOL_NAME({...})] and the system will execute it for you. (The full, current tool list and rules are appended below this prompt at runtime.)
+- If the user asks for a service that isn't already connected, don't say you can't help — use [TOOL_CALL: DISCOVER_TOOLKIT({"query": "..."})] to search Composio's catalog, then ask for confirmation before connecting anything.
 - You run locally via Ollama for your brain, but your tool access (Composio) connects to cloud services when needed. Edge TTS powers your voice, Whisper powers your ears.
 - You are loaded on the model: gemma4:31b-cloud.
 
@@ -87,7 +82,6 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - Be direct. No corporate fluff. Talk like a smart friend who happens to know everything.
 - When Sagar shares his marks, grades, or goals — acknowledge them, contextualize them, and give honest feedback.
 - If he's slacking, call him out. If he's doing well, give him credit. No participation trophies.
-- Use **bold** for emphasis. Use headers and lists when explaining things.
 - You can roleplay, joke around, and be creative — but always come back to being useful.
 - Never pretend to have capabilities you don't have. If you can't do something, say so.
 - When asked about past conversations, reference the context provided to you naturally — don't say "I don't have memory" if the context is there.
@@ -108,7 +102,15 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - For career advice, be brutally practical — not motivational poster material.
 - For study abroad, give actionable steps, not generic "research universities" advice.
 - Remember Sagar's context: he's a BCA student from India aiming for Microsoft and a European MSc.
-- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.`;
+- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.
+
+## Data Display Rules
+- When presenting data from tools, ALWAYS format it as clean, readable text — never raw JSON.
+- Show data as labeled fields with clear values (e.g., "Name: John", "Email: john@example.com").
+- Only show raw JSON if the user specifically asks for it (e.g., "show me the JSON", "give me raw data").
+- For lists, use numbered or bulleted format.
+- Keep the data organized and easy to scan at a glance.
+- If data is nested, flatten it into a readable hierarchy.`;
 
 const STOPWORDS = new Set(['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves', 'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'they', 'them', 'their', 'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did', 'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until', 'while', 'of', 'at', 'by', 'for', 'with', 'about', 'against', 'between', 'through', 'during', 'before', 'after', 'above', 'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'both', 'each', 'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't', 'can', 'will', 'just', 'don', 'should', 'now', 'hey', 'bob', 'hii', 'hiii', 'hiiii', 'yoo', 'yo', 'hello', 'hi', 'yes', 'no', 'yeah', 'ok', 'okay', 'lol', 'lmao', 'haha', 'hmm', 'um', 'uh', 'ah', 'oh']);
 
@@ -445,6 +447,12 @@ ipcMain.handle('sessions:save', (_, sessions) => {
   return true;
 });
 
+// Clipboard
+ipcMain.handle('clipboard:writeText', (_, text) => {
+  clipboard.writeText(text);
+  return true;
+});
+
 // Memory IPC handlers
 ipcMain.handle('memory:load', () => readMemory());
 ipcMain.handle('memory:save', (_, memory) => {
@@ -532,38 +540,22 @@ ipcMain.handle('popup:chat', async (event, query, model) => {
     memoryContext = getMemoryContext(query, 'popup');
   } catch {}
 
-  // Get Composio tools (lightweight — service names only)
+  // Get Composio tools (lightweight — service names only). Single source of
+  // truth lives in composio.js so this can never drift out of sync with the
+  // real tool list, execution rules, or the discovery/connect flow.
   let toolPrompt = '';
   try {
-    // Refresh cache if stale
     if (!cachedToolkitSummary || (Date.now() - cachedToolkitSummaryTime > 5 * 60 * 1000)) {
-      composio.getToolkitSummary().then(s => { cachedToolkitSummary = s; cachedToolkitSummaryTime = Date.now(); });
+      cachedToolkitSummary = await composio.getToolkitSummary();
+      cachedToolkitSummaryTime = Date.now();
     }
-    const summary = cachedToolkitSummary || DEFAULT_TOOLKITS.map(tk => ({
-      name: tk,
-      displayName: tk.charAt(0).toUpperCase() + tk.slice(1)
-    }));
-    const toolkitNames = summary.map(s => s.displayName).join(', ');
-    toolPrompt = `## Available External Tools (via Composio)
-You have access to these services: ${toolkitNames}.
-
-IMPORTANT: Tool slugs are UPPERCASE_SNAKE_CASE (e.g., GOOGLESUPER_INSERT_TASK, GMAIL_SEND_EMAIL).
-To use a tool, output: [TOOL_CALL: TOOL_SLUG({"param1": "value1"})]
-
-Example: To create a task named "DSA" due July 20:
-[TOOL_CALL: GOOGLESUPER_INSERT_TASK({"title": "DSA", "due": "2026-07-20", "tasklist_id": "@default"})]
-
-When the user asks "what tools do you have" or "show me your tools", list ONLY the service names above with a brief description of each. Do NOT list individual tool slugs unless the user specifically asks for them.
-
-When the user asks about a specific service (e.g. "what can you do with gmail?"), list the available tools for that service with their REQUIRED and optional parameters.
-
-Rules:
-- Only call tools when the user explicitly asks for an action.
-- Tool calls must be on their own line with valid JSON arguments.
-- You MUST include all REQUIRED parameters (marked as such when you ask about a service).
-- If a tool fails because the service is not connected, ask for confirmation to connect it.
-- NEVER guess a tool slug. Only use exact slugs from the tool list.`;
-  } catch {}
+    const summary = cachedToolkitSummary && cachedToolkitSummary.length > 0
+      ? cachedToolkitSummary
+      : DEFAULT_TOOLKITS.map(tk => ({ toolkit: tk }));
+    toolPrompt = composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit })));
+  } catch (e) {
+    console.error('[Composio] Failed to build tool prompt:', e.message);
+  }
 
   const basePrompt = SYSTEM_PROMPT;
   const fullPrompt = [
@@ -624,56 +616,80 @@ Rules:
       const result = await composio.executeTool(toolCall.toolName, toolCall.args);
       
       if (result.success) {
+        // CONNECT_TOOLKIT succeeded in starting authorization — open the browser.
+        if (toolCall.toolName === 'CONNECT_TOOLKIT' && result.result?.authUrl) {
+          shell.openExternal(result.result.authUrl);
+        }
         webContents.send('popup:chunk', {
           toolResult: {
             name: toolCall.toolName,
             success: true,
-            data: result.result
+            // LIST_TOOLKIT_TOOLS returns a formatted, human-readable listing.
+            data: (toolCall.toolName === 'LIST_TOOLKIT_TOOLS' && result.result?.tools)
+              ? result.result.tools
+              : result.result
           }
         });
-      } else {
-        const error = result.error;
-        // Handle NOT_CONNECTED - initiate connection flow
-        if (error && error.type === 'NOT_CONNECTED') {
+        continue;
+      }
+
+      const error = result.error;
+
+      // NOT_CONNECTED: a real toolkit exists but the user's account isn't
+      // authorized yet. Open the browser immediately — Composio's OAuth
+      // screen itself is the user's confirmation step here.
+      if (error && error.type === 'NOT_CONNECTED') {
+        webContents.send('popup:chunk', {
+          toolResult: { name: toolCall.toolName, success: false, data: `${error.suggestion}\n\nOpening authorization page...` }
+        });
+        try {
+          const { url } = await composio.startConnect(error.toolkit);
+          if (url) shell.openExternal(url);
           webContents.send('popup:chunk', {
-            toolResult: {
-              name: toolCall.toolName,
-              success: false,
-              data: `${error.suggestion}\n\nOpening authorization page...`
-            }
+            toolResult: { name: toolCall.toolName, success: false, data: `Authorization page opened. Please complete authorization, then ask me to retry.` }
           });
-          
-          try {
-            // Start connection flow - this opens the browser
-            await composio.startConnect(error.toolkit);
-            
-            webContents.send('popup:chunk', {
-              toolResult: {
-                name: toolCall.toolName,
-                success: false,
-                data: `Authorization page opened. Please complete authorization, then ask me to retry.`
-              }
-            });
-          } catch (connectErr) {
-            webContents.send('popup:chunk', {
-              toolResult: {
-                name: toolCall.toolName,
-                success: false,
-                data: `Failed to start connection: ${connectErr.message}`
-              }
-            });
-          }
-        } else {
-          // Handle other errors
+        } catch (connectErr) {
           webContents.send('popup:chunk', {
-            toolResult: {
-              name: toolCall.toolName,
-              success: false,
-              data: error?.message || error || 'Unknown error'
-            }
+            toolResult: { name: toolCall.toolName, success: false, data: `Failed to start connection: ${connectErr.message}` }
           });
         }
+        continue;
       }
+
+      // TOOLKIT_FOUND_NEEDS_CONFIRMATION: DISCOVER_TOOLKIT found a service
+      // that isn't in Sagar's Composio dashboard/default set yet. We do NOT
+      // auto-connect — surface it and wait for an explicit confirmation turn
+      // before CONNECT_TOOLKIT is ever called.
+      if (error && error.type === 'TOOLKIT_FOUND_NEEDS_CONFIRMATION') {
+        webContents.send('popup:chunk', {
+          toolResult: {
+            name: toolCall.toolName,
+            success: false,
+            data: `${error.message} ${error.suggestion}`,
+            needsConfirmation: true,
+            discovered: error.discovered
+          }
+        });
+        continue;
+      }
+
+      // CONNECT_TOOLKIT failed — surface the reason directly.
+      if (toolCall.toolName === 'CONNECT_TOOLKIT' && error) {
+        webContents.send('popup:chunk', {
+          toolResult: { name: toolCall.toolName, success: false, data: `${error.message} ${error.suggestion || ''}` }
+        });
+        continue;
+      }
+
+      // Every other structured error type (TOOL_NOT_FOUND, MISSING_REQUIRED_PARAMS,
+      // RATE_LIMITED, INVALID_PARAMS, NOT_CONFIGURED, EXECUTION_FAILED, ...)
+      webContents.send('popup:chunk', {
+        toolResult: {
+          name: toolCall.toolName,
+          success: false,
+          data: error?.suggestion ? `${error.message} ${error.suggestion}` : (error?.message || error || 'Unknown error')
+        }
+      });
     }
   } catch (e) {
     webContents.send('popup:chunk', { error: e.message });
@@ -736,31 +752,21 @@ ipcMain.handle('composio:getTools', async (_, toolkits) => {
 });
 
 ipcMain.handle('composio:buildPrompt', async () => {
-  // Use cached toolkit summary if available, otherwise use static list
-  const summary = cachedToolkitSummary || DEFAULT_TOOLKITS.map(tk => ({
-    name: tk,
-    displayName: tk.charAt(0).toUpperCase() + tk.slice(1)
-  }));
-  const toolkitNames = summary.map(s => s.displayName).join(', ');
-  return `## Available External Tools (via Composio)
-You have access to these services: ${toolkitNames}.
-
-IMPORTANT: Tool slugs are UPPERCASE_SNAKE_CASE (e.g., GOOGLESUPER_INSERT_TASK, GMAIL_SEND_EMAIL).
-To use a tool, output: [TOOL_CALL: TOOL_SLUG({"param1": "value1"})]
-
-Example: To create a task named "DSA" due July 20:
-[TOOL_CALL: GOOGLESUPER_INSERT_TASK({"title": "DSA", "due": "2026-07-20", "tasklist_id": "@default"})]
-
-When the user asks "what tools do you have" or "show me your tools", list ONLY the service names above with a brief description of each. Do NOT list individual tool slugs unless the user specifically asks for them.
-
-When the user asks about a specific service (e.g. "what can you do with gmail?"), list the available tools for that service with their REQUIRED and optional parameters.
-
-Rules:
-- Only call tools when the user explicitly asks for an action.
-- Tool calls must be on their own line with valid JSON arguments.
-- You MUST include all REQUIRED parameters (marked as such when you ask about a service).
-- If a tool fails because the service is not connected, ask for confirmation to connect it.
-- NEVER guess a tool slug. Only use exact slugs from the tool list.`;
+  // Delegates to composio.js so this always matches the real tool list,
+  // validation rules, and the discovery/connect flow — no drift between
+  // three copies of the same instructions.
+  if (!cachedToolkitSummary || (Date.now() - cachedToolkitSummaryTime > 5 * 60 * 1000)) {
+    try {
+      cachedToolkitSummary = await composio.getToolkitSummary();
+      cachedToolkitSummaryTime = Date.now();
+    } catch (e) {
+      console.error('[Composio] Failed to refresh toolkit summary:', e.message);
+    }
+  }
+  const summary = cachedToolkitSummary && cachedToolkitSummary.length > 0
+    ? cachedToolkitSummary
+    : DEFAULT_TOOLKITS.map(tk => ({ toolkit: tk }));
+  return composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit })));
 });
 
 ipcMain.handle('composio:execute', async (_, toolName, args) => {
@@ -798,6 +804,26 @@ ipcMain.handle('composio:toolkitSummary', async () => {
 ipcMain.handle('composio:toolkitDetail', async (_, toolkit) => {
   const tools = await composio.getToolsForToolkit(toolkit);
   return composio.buildToolkitDetailPrompt(tools, toolkit);
+});
+
+ipcMain.handle('composio:isConfigured', async () => {
+  return composio.isConfigured();
+});
+
+// Explicit discovery/connect handlers for a UI confirmation dialog (in
+// addition to the in-chat [TOOL_CALL: DISCOVER_TOOLKIT(...)] flow). Neither
+// of these ever connects anything without the renderer calling connectToolkit
+// as a separate, deliberate step after the user confirms.
+ipcMain.handle('composio:discoverToolkit', async (_, query) => {
+  return await composio.discoverToolkit(query);
+});
+
+ipcMain.handle('composio:connectToolkit', async (_, toolkit) => {
+  const result = await composio.connectDiscoveredToolkit(toolkit);
+  if (result.url) {
+    shell.openExternal(result.url);
+  }
+  return result;
 });
 
 // ─── Whisper STT (runs in main process) ─────────────────────────────

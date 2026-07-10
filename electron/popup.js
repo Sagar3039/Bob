@@ -8,6 +8,133 @@ let voiceOn = false;
 let answering = false;
 let currentModel = '';
 
+// ─── JSON Formatter ──────────────────────────────────────────────
+function formatToolResult(data, toolName = '') {
+  if (data === null || data === undefined) return 'Operation completed successfully.';
+  if (typeof data === 'string') {
+    try { data = JSON.parse(data); } catch { return data; }
+  }
+
+  function extractLocalized(obj) {
+    if (!obj) return '';
+    if (typeof obj === 'string') return obj;
+    if (obj.localized) {
+      const locale = obj.preferredLocale;
+      const key = locale ? `${locale.language}_${locale.country}` : Object.keys(obj.localized)[0];
+      return obj.localized[key] || Object.values(obj.localized)[0] || '';
+    }
+    if (obj.localizedFirstName) return obj.localizedFirstName;
+    return '';
+  }
+
+  function extractValue(obj) {
+    if (!obj) return obj;
+    if (typeof obj !== 'object') return obj;
+    if (obj.localized) return extractLocalized(obj);
+    if (obj.value !== undefined) return obj.value;
+    if (obj.displayValue) return obj.displayValue;
+    return obj;
+  }
+
+  function formatField(key, value, indent = '') {
+    if (value === null || value === undefined || value === '') return '';
+    const label = key.replace(/([A-Z])/g, ' $1').replace(/[_-]/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim();
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      const str = String(value).trim();
+      if (!str || str === '{}' || str === '[]') return '';
+      return `${indent}${label}: ${str}`;
+    }
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '';
+      const items = value.map(v => {
+        if (typeof v === 'object' && v !== null) return formatObject(v, indent + '  ');
+        return `${indent}  - ${v}`;
+      }).filter(Boolean);
+      if (items.length === 0) return '';
+      return `${indent}${label}:\n${items.join('\n')}`;
+    }
+    if (typeof value === 'object') {
+      const formatted = formatObject(value, indent + '  ');
+      if (!formatted) return '';
+      return `${indent}${label}:\n${formatted}`;
+    }
+    return '';
+  }
+
+  function formatObject(obj, indent = '') {
+    if (!obj || typeof obj !== 'object') return String(obj || '');
+    const lines = [];
+    const priorityKeys = ['id', 'firstName', 'lastName', 'name', 'title', 'subject', 'headline', 'email', 'emailAddress', 'sender', 'from', 'status', 'state', 'dueDate', 'due', 'createdAt', 'updatedAt', 'body', 'content', 'message', 'text', 'description', 'profileUrl', 'url', 'link', 'webUrl', 'htmlUrl', 'profilePicture', 'avatar', 'image'];
+    const processedKeys = new Set();
+    for (const key of priorityKeys) {
+      if (obj.hasOwnProperty(key)) {
+        const value = extractValue(obj[key]);
+        const formatted = formatField(key, value, indent);
+        if (formatted) { lines.push(formatted); processedKeys.add(key); }
+      }
+    }
+    for (const [key, value] of Object.entries(obj)) {
+      if (processedKeys.has(key)) continue;
+      if (key === 'preferredLocale' || key === 'localized' || key === 'paging') continue;
+      const extracted = extractValue(value);
+      const formatted = formatField(key, extracted, indent);
+      if (formatted) lines.push(formatted);
+    }
+    return lines.join('\n');
+  }
+
+  const str = JSON.stringify(data);
+
+  // Gmail send result
+  if (data.labelIds && Array.isArray(data.labelIds)) {
+    const parts = [];
+    if (data.labelIds.includes('SENT')) parts.push('Status: Email sent successfully');
+    if (data.id) parts.push(`Message ID: ${data.id}`);
+    if (data.threadId) parts.push(`Thread ID: ${data.threadId}`);
+    if (data.display_url) parts.push(`View in Gmail: ${data.display_url}`);
+    if (parts.length > 0) return parts.join('\n');
+  }
+
+  if (str.includes('localizedFirstName') || str.includes('profileUrl')) {
+    const parts = [];
+    const firstName = extractLocalized(data.firstName) || data.localizedFirstName || '';
+    const lastName = extractLocalized(data.lastName) || data.localizedLastName || '';
+    const headline = extractLocalized(data.headline) || data.localizedHeadline || '';
+    if (firstName || lastName) parts.push(`Name: ${firstName} ${lastName}`.trim());
+    if (headline) parts.push(`Headline: ${headline}`);
+    if (data.vanityName) parts.push(`Username: ${data.vanityName}`);
+    if (data.profileUrl) parts.push(`Profile: ${data.profileUrl}`);
+    if (data.id) parts.push(`ID: ${data.id}`);
+    if (parts.length > 0) return parts.join('\n');
+  }
+
+  if (Array.isArray(data)) {
+    if (data.length === 0) return 'No results found.';
+    return data.map((item, i) => {
+      if (typeof item === 'object' && item !== null) {
+        const formatted = formatObject(item, '  ');
+        return formatted ? `${i + 1}. ${formatted}` : `${i + 1}. ${JSON.stringify(item)}`;
+      }
+      return `${i + 1}. ${item}`;
+    }).join('\n');
+  }
+
+  if (typeof data === 'object') {
+    const formatted = formatObject(data);
+    if (formatted) return formatted;
+  }
+  return String(data);
+}
+
+function formatToolResultWithHeader(data, toolName, success = true) {
+  if (!success) {
+    const errorMsg = typeof data === 'string' ? data : JSON.stringify(data);
+    return `${toolName} failed: ${errorMsg}`;
+  }
+  const formatted = formatToolResult(data, toolName);
+  return `${toolName} completed successfully.\n\n${formatted}`;
+}
+
 // ─── Audio Queue ──────────────────────────────────────────────────
 const audioQueue = [];
 let isPlaying = false;
@@ -226,7 +353,7 @@ window.electronAPI.onChunk((data) => {
   if (data.toolResult) {
     const { name, success, data: resultData } = data.toolResult;
     const resultText = success
-      ? `\n${name} completed.\n${JSON.stringify(resultData, null, 2)}`
+      ? `\n${formatToolResultWithHeader(resultData, name)}`
       : `\n${name} failed: ${resultData}`;
     const full = responseEl.dataset.full || '';
     responseEl.dataset.full = full + resultText;

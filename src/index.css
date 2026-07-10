@@ -571,6 +571,50 @@ select option {
   margin-bottom: 4px;
 }
 
+/* ---- Copy Button ---- */
+.bubble {
+  position: relative;
+}
+
+.bubble .copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.bubble .copy-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+  color: #fff;
+}
+
+.bubble:hover .copy-btn {
+  opacity: 1;
+}
+
+.bubble .copy-btn.copied {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #22c55e;
+}
+
+.bubble .copy-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
 /* ---- Composer ---- */
 .composer {
   display: flex;

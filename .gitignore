@@ -1,4 +1,8 @@
-node_modules/
-dist/
-.env
+# Browser profiles
+.browser-profile/
+
+# Other common files to ignore
 *.log
+node_modules/
+.DS_Store
+Thumbs.db

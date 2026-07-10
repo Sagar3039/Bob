@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node -e \"require\\('./electron/composio.js'\\); console.log\\('composio.js loads OK — no syntax errors'\\);\")",
+      "Bash(ls node_modules/.bin/vite)",
+      "Bash(ls node_modules/.bin/electron*)",
+      "Bash(grep -qE \"Toolkit summary loaded|ready in|VITE|Error|EADDRINUSE|Failed|Composio\" dev.log)",
+      "Bash(break)"
+    ]
+  }
+}

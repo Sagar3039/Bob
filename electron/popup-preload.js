@@ -21,6 +21,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     startConnect: (toolkit) => ipcRenderer.invoke('composio:startConnect', toolkit),
     waitForConnection: (toolkit, timeoutMs) => ipcRenderer.invoke('composio:waitForConnection', toolkit, timeoutMs),
     toolkitSummary: () => ipcRenderer.invoke('composio:toolkitSummary'),
-    toolkitDetail: (toolkit) => ipcRenderer.invoke('composio:toolkitDetail', toolkit)
+    toolkitDetail: (toolkit) => ipcRenderer.invoke('composio:toolkitDetail', toolkit),
+    isConfigured: () => ipcRenderer.invoke('composio:isConfigured'),
+    discoverToolkit: (query) => ipcRenderer.invoke('composio:discoverToolkit', query),
+    connectToolkit: (toolkit) => ipcRenderer.invoke('composio:connectToolkit', toolkit)
   }
 });

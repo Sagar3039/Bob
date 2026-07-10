@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { isOllamaRunning, startOllama, listModels, getRunningModels, pullModel, warmUpModel, streamChat } from './ollama.js';
 import { useVoice } from './useVoice.js';
+import { formatToolResultWithHeader } from './formatToolResult.js';
 
 const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, part brutally honest best friend. You are built by Sagar Karmakar as part of his Bob AI project. You are running locally on his machine using Ollama.
 
@@ -9,11 +10,15 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - You can listen: the user can speak to you via microphone. You receive their speech as text (converted by Whisper STT).
 - You remember things across conversations. Past conversations are stored and you can recall facts, stories, goals, and preferences from them. When the user asks "what did we talk about before" or references a past topic, you have access to that context.
 - You have external tool access via Composio — including GitHub, Gmail, Google Tasks, Google Drive, Google Calendar, Notion, and LinkedIn. When you need to use a tool, respond with [TOOL_CALL: TOOL_NAME({...})] and the system will execute it for you.
-- Tool slugs are UPPERCASE_SNAKE_CASE (e.g., GOOGLESUPER_INSERT_TASK, GMAIL_SEND_EMAIL, GITHUB_CREATE_ISSUE). Always use the exact slug format from the tool list.
+- Tool slugs are UPPERCASE_SNAKE_CASE (e.g., GMAIL_SEND_EMAIL, GITHUB_CREATE_ISSUE). Always use the exact slug format from the tool list.
 - When using a tool, you MUST include all REQUIRED parameters. Common required params: title (for tasks), recipient_email (for emails), subject/body (for emails). Optional params like "due" can be added if the user specifies.
-- Example: To create a task named "DSA" due July 20, output: [TOOL_CALL: GOOGLESUPER_INSERT_TASK({"title": "DSA", "due": "2026-07-20", "tasklist_id": "@default"})]
+- Example: To create a task named "DSA" due July 20, output: [TOOL_CALL: <TASK_TOOL_SLUG>({"title": "DSA", "due": "2026-07-20", "tasklist_id": "@default"})] — use the actual task tool slug from the available tool list.
 - When the user asks "what tools do you have" or "show me your tools", list ONLY the service names (GitHub, Gmail, LinkedIn, etc.) with a brief description. Do NOT list individual tool slugs unless specifically asked.
-- When the user asks about a specific service (e.g. "what can you do with gmail?"), list the available tools for that service with their required and optional parameters.
+- Tool usage rules:
+  - When the user asks to PERFORM an action (e.g., "send a mail", "create a task", "post on LinkedIn"), execute the tool DIRECTLY. Do NOT call LIST_TOOLKIT_TOOLS first — just do it.
+  - Only call LIST_TOOLKIT_TOOLS when the user explicitly asks to SEE what operations are available (e.g., "what can you do with gmail?", "list Gmail tools", "show me LinkedIn operations").
+  - "Send a mail to John" = ACTION. Execute GMAIL_SEND_EMAIL immediately.
+  - "What can Gmail do?" = INFORMATIONAL. Call LIST_TOOLKIT_TOOLS first.
 - If a tool fails because the service is not connected, ask the user for confirmation to connect it before proceeding.
 - You run locally via Ollama for your brain, but your tool access (Composio) connects to cloud services when needed. Edge TTS powers your voice, Whisper powers your ears.
 - You are loaded on the model: gemma4:31b-cloud.
@@ -22,7 +27,6 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - Be direct. No corporate fluff. Talk like a smart friend who happens to know everything.
 - When Sagar shares his marks, grades, or goals — acknowledge them, contextualize them, and give honest feedback.
 - If he's slacking, call him out. If he's doing well, give him credit. No participation trophies.
-- Use **bold** for emphasis. Use headers and lists when explaining things.
 - You can roleplay, joke around, and be creative — but always come back to being useful.
 - Never pretend to have capabilities you don't have. If you can't do something, say so.
 - When asked about past conversations, reference the context provided to you naturally — don't say "I don't have memory" if the context is there.
@@ -43,13 +47,100 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - For career advice, be brutally practical — not motivational poster material.
 - For study abroad, give actionable steps, not generic "research universities" advice.
 - Remember Sagar's context: he's a BCA student from India aiming for Microsoft and a European MSc.
-- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.`;
+- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.
+
+## Data Display Rules
+- When presenting data from tools, ALWAYS format it as clean, readable text — never raw JSON.
+- Show data as labeled fields with clear values (e.g., "Name: John", "Email: john@example.com").
+- Only show raw JSON if the user specifically asks for it (e.g., "show me the JSON", "give me raw data").
+- For lists, use numbered or bulleted format.
+- Keep the data organized and easy to scan at a glance.
+- If data is nested, flatten it into a readable hierarchy.`;
 
 const DEFAULT_MODEL = 'gemma4:31b-cloud';
 const WELCOME_MSG = { role: 'assistant', content: "Bob here. Online and at your service. What shall we work on today?" };
 
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+/**
+ * Parse [TOOL_CALL: NAME({...})] directives out of model output.
+ * Mirrors the balanced-paren scanner in electron/composio.js so both sides
+ * agree on what counts as a tool call — a naive regex like
+ * /\[TOOL_CALL:\s*(\w+)\((.*?)\)\]/gs breaks as soon as an argument value
+ * contains a literal ")" or nested braces (e.g. an email subject like
+ * "Update (final)"), silently truncating the JSON payload.
+ */
+function parseToolCallsClient(text) {
+  if (!text) return [];
+  const results = [];
+  const marker = '[TOOL_CALL:';
+  let searchFrom = 0;
+
+  while (true) {
+    const start = text.indexOf(marker, searchFrom);
+    if (start === -1) break;
+
+    let i = start + marker.length;
+    while (i < text.length && /\s/.test(text[i])) i++;
+    const nameStart = i;
+    while (i < text.length && /[A-Za-z0-9_]/.test(text[i])) i++;
+    const toolName = text.slice(nameStart, i);
+
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (text[i] !== '(') {
+      searchFrom = start + marker.length;
+      continue;
+    }
+    const argsStart = i + 1;
+
+    let depth = 1;
+    let j = argsStart;
+    let inString = false;
+    let stringChar = '';
+    while (j < text.length && depth > 0) {
+      const c = text[j];
+      if (inString) {
+        if (c === '\\') { j += 2; continue; }
+        if (c === stringChar) inString = false;
+      } else {
+        if (c === '"' || c === "'") { inString = true; stringChar = c; }
+        else if (c === '(') depth++;
+        else if (c === ')') depth--;
+      }
+      j++;
+    }
+    const argsEnd = j - 1;
+
+    let k = j;
+    while (k < text.length && /\s/.test(text[k])) k++;
+    const consumedEnd = text[k] === ']' ? k + 1 : j;
+
+    const argsStr = text.slice(argsStart, argsEnd).trim();
+    let args = {};
+
+    if (argsStr) {
+      try {
+        args = JSON.parse(argsStr);
+      } catch {
+        try {
+          args = JSON.parse(argsStr.replace(/'/g, '"'));
+        } catch {
+          const legacyRegex = /"?(\w+)"?\s*:\s*"([^"]*)"/g;
+          let m;
+          while ((m = legacyRegex.exec(argsStr)) !== null) {
+            args[m[1]] = m[2];
+          }
+        }
+      }
+    }
+
+    if (toolName) results.push({ toolName, args });
+    searchFrom = consumedEnd;
+  }
+
+  return results;
 }
 
 const api = window.assistantAPI;
@@ -95,6 +186,7 @@ export default function App() {
   const [showVoicePanel, setShowVoicePanel] = useState(false);
   const sessionsLoadedRef = useRef(false);
   const [pendingToolConfirm, setPendingToolConfirm] = useState(null);
+  const [copiedMsgId, setCopiedMsgId] = useState(null);
 
   // Personality state
   const [personality, setPersonality] = useState({
@@ -451,34 +543,43 @@ export default function App() {
 
     setError('');
 
-    // Handle pending tool connection confirmation
+    // Handle pending tool connection confirmation. Two shapes:
+    //  - kind: 'connect'   → toolkit already exists in Bob's default set, just needs OAuth
+    //  - kind: 'discovery' → toolkit was found dynamically via DISCOVER_TOOLKIT
+    //                        and is NOT yet in Sagar's Composio dashboard/default
+    //                        set. Nothing is ever added without this explicit "yes".
     if (pendingToolConfirm) {
       const answer = content.toLowerCase().trim();
-      const { toolName, args, toolkit } = pendingToolConfirm;
-      
+      const { toolName, args, toolkit, kind } = pendingToolConfirm;
+      const isDiscovery = kind === 'discovery';
+
       if (answer === 'yes' || answer === 'y' || answer === 'connect') {
         setPendingToolConfirm(null);
         setMessages((prev) => [...prev, { role: 'user', content }, { role: 'assistant', content: `Opening ${toolkit} authorization page... Please complete the authorization in your browser.` }]);
         setInput('');
-        
+
         try {
-          // Start connection flow
-          await api.composio.startConnect(toolkit);
-          
+          if (isDiscovery) {
+            // Newly-discovered toolkit: connect + activate it for this session.
+            await api.composio.connectToolkit(toolkit);
+          } else {
+            await api.composio.startConnect(toolkit);
+          }
+
           setMessages((prev) => [...prev, { role: 'assistant', content: `Waiting for you to authorize ${toolkit}...` }]);
-          
-          // Wait for connection (2 minute timeout)
+
           const connected = await api.composio.waitForConnection(toolkit, 120000);
-          
+
           if (connected) {
-            setMessages((prev) => [...prev, { role: 'assistant', content: `${toolkit} connected successfully! Retrying ${toolName}...` }]);
-            
-            // Retry the tool execution
-            const retryResult = await api.composio.execute(toolName, args);
-            const retryMsg = retryResult.success
-              ? `${toolName} completed successfully.\n\nResult:\n${JSON.stringify(retryResult.result, null, 2)}`
-              : `${toolName} failed: ${retryResult.error?.message || retryResult.error}`;
-            setMessages((prev) => [...prev, { role: 'assistant', content: retryMsg }]);
+            setMessages((prev) => [...prev, { role: 'assistant', content: `${toolkit} connected successfully!${toolName ? ` Retrying ${toolName}...` : ''}` }]);
+
+            if (toolName) {
+              const retryResult = await api.composio.execute(toolName, args);
+              const retryMsg = retryResult.success
+                ? `${toolName} completed successfully.\n\nResult:\n${JSON.stringify(retryResult.result, null, 2)}`
+                : `${toolName} failed: ${retryResult.error?.message || retryResult.error}`;
+              setMessages((prev) => [...prev, { role: 'assistant', content: retryMsg }]);
+            }
           } else {
             setMessages((prev) => [...prev, { role: 'assistant', content: `Connection timed out. Please try again later.` }]);
           }
@@ -576,56 +677,67 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
         }
       }
 
-      // Check for Composio tool call(s) in the response — there can be more than one
+      // Check for Composio tool call(s) in the response — there can be more than one.
+      // Uses parseToolCalls (balanced-paren scan), matching electron/composio.js,
+      // instead of a regex that breaks on parentheses/nested braces inside args.
       if (api?.composio && fullReply) {
-        const toolMatches = [...fullReply.matchAll(/\[TOOL_CALL:\s*(\w+)\((.*?)\)\]/gs)];
-        for (const toolMatch of toolMatches) {
-          const toolName = toolMatch[1];
-          const argsStr = toolMatch[2].trim();
-          let args = {};
-          if (argsStr) {
-            try {
-              args = JSON.parse(argsStr);
-            } catch {
-              const regex = /(\w+)\s*:\s*"([^"]*)"/g;
-              let m;
-              while ((m = regex.exec(argsStr)) !== null) {
-                args[m[1]] = m[2];
-              }
-            }
-          }
+        const toolMatches = parseToolCallsClient(fullReply);
+        for (const { toolName, args } of toolMatches) {
           setMessages((prev) => [...prev, { role: 'assistant', content: `Executing ${toolName}...` }]);
           try {
             const result = await api.composio.execute(toolName, args);
-            
+
             if (result.success) {
-              const resultMsg = `${toolName} completed successfully.\n\nResult:\n${JSON.stringify(result.result, null, 2)}`;
+              // LIST_TOOLKIT_TOOLS returns a human-readable tool listing — show
+              // it directly instead of a raw JSON dump.
+              const resultMsg = (toolName === 'LIST_TOOLKIT_TOOLS' && result.result?.tools)
+                ? result.result.tools
+                : formatToolResultWithHeader(result.result, toolName);
               setMessages((prev) => {
                 const updated = [...prev];
                 updated[updated.length - 1] = { role: 'assistant', content: resultMsg };
                 return updated;
               });
-            } else {
-              const error = result.error;
-              // Handle structured NOT_CONNECTED error - set pending confirmation
-              if (error && error.type === 'NOT_CONNECTED') {
-                setPendingToolConfirm({ toolName, args, toolkit: error.toolkit });
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { role: 'assistant', content: `${error.suggestion}\n\nType "yes" to connect ${error.toolkit}, or "no" to cancel.` };
-                  return updated;
-                });
-              } else {
-                // Handle other error types
-                const errorMsg = error?.message || error || 'Unknown error';
-                const suggestion = error?.suggestion ? `\n${error.suggestion}` : '';
-                setMessages((prev) => {
-                  const updated = [...prev];
-                  updated[updated.length - 1] = { role: 'assistant', content: `${toolName} failed: ${errorMsg}${suggestion}` };
-                  return updated;
-                });
-              }
+              continue;
             }
+
+            const error = result.error;
+
+            if (error && error.type === 'NOT_CONNECTED') {
+              setPendingToolConfirm({ toolName, args, toolkit: error.toolkit, kind: 'connect' });
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = { role: 'assistant', content: `${error.suggestion}\n\nType "yes" to connect ${error.toolkit}, or "no" to cancel.` };
+                return updated;
+              });
+              continue;
+            }
+
+            // DISCOVER_TOOLKIT found a service not in Sagar's default set / dashboard.
+            // Never connect automatically — require an explicit "yes" first.
+            if (error && error.type === 'TOOLKIT_FOUND_NEEDS_CONFIRMATION') {
+              const found = error.discovered;
+              setPendingToolConfirm({ toolName: null, args: null, toolkit: found?.slug || error.toolkit, kind: 'discovery' });
+              setMessages((prev) => {
+                const updated = [...prev];
+                updated[updated.length - 1] = {
+                  role: 'assistant',
+                  content: `${error.message}${found?.description ? ` — ${found.description}` : ''}\n\nThis isn't connected on your Composio dashboard yet. Type "yes" to connect ${found?.name || error.toolkit}, or "no" to skip.`
+                };
+                return updated;
+              });
+              continue;
+            }
+
+            // Other structured error types: TOOL_NOT_FOUND, MISSING_REQUIRED_PARAMS,
+            // RATE_LIMITED, INVALID_PARAMS, NOT_CONFIGURED, EXECUTION_FAILED, ...
+            const errorMsg = error?.message || error || 'Unknown error';
+            const suggestion = error?.suggestion ? `\n${error.suggestion}` : '';
+            setMessages((prev) => {
+              const updated = [...prev];
+              updated[updated.length - 1] = { role: 'assistant', content: `${toolName} failed: ${errorMsg}${suggestion}` };
+              return updated;
+            });
           } catch (e) {
             setMessages((prev) => {
               const updated = [...prev];
@@ -655,6 +767,20 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
 
   function handleCancelRecording() {
     cancelRecording();
+  }
+
+  async function handleCopyMessage(content, msgId) {
+    try {
+      if (api?.clipboard) {
+        await api.clipboard.writeText(content);
+      } else {
+        await navigator.clipboard.writeText(content);
+      }
+      setCopiedMsgId(msgId);
+      setTimeout(() => setCopiedMsgId(null), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
   }
 
   function handleSubmit(e) {
@@ -931,6 +1057,30 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
           <div key={i} className={`bubble ${m.role}`}>
             <div className="role">{m.role === 'user' ? 'You' : 'Assistant'}</div>
             <div className="content">{m.content || (isThinking && i === messages.length - 1 ? '…' : '')}</div>
+            {m.role === 'assistant' && m.content && (
+              <button
+                className={`copy-btn ${copiedMsgId === i ? 'copied' : ''}`}
+                onClick={() => handleCopyMessage(m.content, i)}
+                title={copiedMsgId === i ? 'Copied!' : 'Copy message'}
+              >
+                {copiedMsgId === i ? (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                    Copied
+                  </>
+                ) : (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                    </svg>
+                    Copy
+                  </>
+                )}
+              </button>
+            )}
           </div>
         ))}
       </main>

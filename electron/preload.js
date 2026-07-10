@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('assistantAPI', {
   platform: process.platform,
+  clipboard: {
+    writeText: (text) => ipcRenderer.invoke('clipboard:writeText', text)
+  },
   sessions: {
     load: () => ipcRenderer.invoke('sessions:load'),
     save: (sessions) => ipcRenderer.invoke('sessions:save', sessions)
@@ -30,6 +33,9 @@ contextBridge.exposeInMainWorld('assistantAPI', {
     startConnect: (toolkit) => ipcRenderer.invoke('composio:startConnect', toolkit),
     waitForConnection: (toolkit, timeoutMs) => ipcRenderer.invoke('composio:waitForConnection', toolkit, timeoutMs),
     toolkitSummary: () => ipcRenderer.invoke('composio:toolkitSummary'),
-    toolkitDetail: (toolkit) => ipcRenderer.invoke('composio:toolkitDetail', toolkit)
+    toolkitDetail: (toolkit) => ipcRenderer.invoke('composio:toolkitDetail', toolkit),
+    isConfigured: () => ipcRenderer.invoke('composio:isConfigured'),
+    discoverToolkit: (query) => ipcRenderer.invoke('composio:discoverToolkit', query),
+    connectToolkit: (toolkit) => ipcRenderer.invoke('composio:connectToolkit', toolkit)
   }
 });
