@@ -241,7 +241,14 @@ Rules:
 - Tool calls must be on their own line with valid, complete JSON arguments (no trailing commas, no comments).
 - You MUST include all REQUIRED parameters. If you don't know a required value, ask the user first instead of guessing.
 - If a tool fails because the service is not connected, ask for confirmation to connect it — Bob will handle the authorization flow.
-- NEVER guess a tool slug that wasn't given to you. To find a tool inside an ALREADY-CONNECTED service (github, gmail, googlesuper, notion, linkedin), use LIST_TOOLKIT_TOOLS for that service — do NOT use DISCOVER_TOOLKIT for services you already have. Only use DISCOVER_TOOLKIT for services that are NOT in your connected list.`;
+- NEVER guess a tool slug that wasn't given to you. To find a tool inside an ALREADY-CONNECTED service (github, gmail, googlesuper, notion, linkedin), use LIST_TOOLKIT_TOOLS for that service — do NOT use DISCOVER_TOOLKIT for services you already have. Only use DISCOVER_TOOLKIT for services that are NOT in your connected list.
+
+Common tool slugs (use these EXACTLY):
+- LinkedIn post: LINKEDIN_CREATE_LINKED_IN_POST (params: author is auto-resolved, commentary is the post text)
+- LinkedIn article share: LINKEDIN_CREATE_ARTICLE_OR_URL_SHARE
+- Gmail send: GMAIL_SEND_EMAIL (params: recipient_email, subject, body)
+- GitHub issue: GITHUB_CREATE_AN_ISSUE
+- Google Tasks: GOOGLESUPER_INSERT_TASK (params: title, tasklist_id: "@default")`;
 }
 
 /**
@@ -369,14 +376,15 @@ function parseToolCall(text) {
 // Conservative aliasing — only applied when the tool schema does NOT already
 // have the key the model used, and DOES have the aliased target. This avoids
 // silently overwriting a correct argument the model already got right.
+// Each key maps to an array of possible targets (checked in order).
 const PARAM_ALIASES = {
-  text: 'title',
-  name: 'title',
-  content: 'body',
-  message: 'body',
-  email: 'recipient_email',
-  to_email: 'recipient_email',
-  from: 'sender_email'
+  text: ['commentary', 'title', 'body'],
+  name: ['title', 'name'],
+  content: ['body', 'content'],
+  message: ['body', 'message'],
+  email: ['recipient_email', 'email'],
+  to_email: ['recipient_email', 'to'],
+  from: ['sender_email', 'from']
 };
 
 /**
@@ -401,8 +409,11 @@ function reconcileArgs(tool, rawArgs) {
 
   for (const [key, value] of Object.entries(args)) {
     let targetKey = key;
-    if (!validKeys.has(key) && PARAM_ALIASES[key] && validKeys.has(PARAM_ALIASES[key])) {
-      targetKey = PARAM_ALIASES[key];
+    if (!validKeys.has(key) && PARAM_ALIASES[key]) {
+      const aliases = Array.isArray(PARAM_ALIASES[key]) ? PARAM_ALIASES[key] : [PARAM_ALIASES[key]];
+      for (const alias of aliases) {
+        if (validKeys.has(alias)) { targetKey = alias; break; }
+      }
     }
 
     if (validKeys.size > 0 && !validKeys.has(targetKey)) {
@@ -438,6 +449,34 @@ function reconcileArgs(tool, rawArgs) {
 // ---------------------------------------------------------------------------
 // Tool resolution (exact slug, case-insensitive, then fuzzy match)
 // ---------------------------------------------------------------------------
+
+// Explicit slug aliases — common wrong slugs the model invents, mapped to the
+// real slug. Checked BEFORE fuzzy matching so the right tool is always chosen.
+const SLUG_ALIASES = {
+  // LinkedIn
+  'LINKEDIN_CREATE_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_MAKE_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_NEW_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_ADD_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_SEND_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_SHARE_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_POST': 'LINKEDIN_CREATE_LINKED_IN_POST',
+  'LINKEDIN_CREATE_ARTICLE': 'LINKEDIN_CREATE_ARTICLE_OR_URL_SHARE',
+  'LINKEDIN_SHARE_ARTICLE': 'LINKEDIN_CREATE_ARTICLE_OR_URL_SHARE',
+  // Gmail
+  'GMAIL_CREATE_EMAIL': 'GMAIL_SEND_EMAIL',
+  'GMAIL_NEW_EMAIL': 'GMAIL_SEND_EMAIL',
+  'GMAIL_SEND_MESSAGE': 'GMAIL_SEND_EMAIL',
+  'GMAIL_COMPOSE': 'GMAIL_SEND_EMAIL',
+  // Google Tasks
+  'GOOGLESUPER_CREATE_TASK': 'GOOGLESUPER_INSERT_TASK',
+  'GOOGLESUPER_ADD_TASK': 'GOOGLESUPER_INSERT_TASK',
+  'GOOGLESUPER_NEW_TASK': 'GOOGLESUPER_INSERT_TASK',
+  // GitHub
+  'GITHUB_CREATE_ISSUE': 'GITHUB_CREATE_AN_ISSUE',
+  'GITHUB_NEW_ISSUE': 'GITHUB_CREATE_AN_ISSUE',
+  'GITHUB_MAKE_ISSUE': 'GITHUB_CREATE_AN_ISSUE',
+};
 
 async function ensureToolsLoaded() {
   if (!cachedTools || cachedTools.size === 0) {
@@ -487,6 +526,10 @@ function resolveSlug(toolName) {
 
   const upper = toolName.toUpperCase();
   if (cachedTools.has(upper)) return upper;
+
+  // Check explicit aliases first — guaranteed correct match.
+  const aliasTarget = SLUG_ALIASES[upper] || SLUG_ALIASES[toolName];
+  if (aliasTarget && cachedTools.has(aliasTarget)) return aliasTarget;
 
   const searchParts = toolName.toLowerCase().split('_').filter(Boolean);
   if (searchParts.length === 0) return toolName;
@@ -562,6 +605,10 @@ async function getFullCatalog() {
 
   do {
     const page = await composio.toolkits.get({ cursor, limit: 200 });
+    if (Array.isArray(page)) {
+      items.push(...page);
+      break;
+    }
     const pageItems = page?.items || page?.data || [];
     items.push(...pageItems);
     cursor = page?.nextCursor || page?.next_cursor || undefined;
@@ -630,6 +677,35 @@ async function activateToolkit(toolkitSlug) {
 // ---------------------------------------------------------------------------
 // Execution
 // ---------------------------------------------------------------------------
+
+// Cache for the user's LinkedIn person URN
+let cachedLinkedInURN = null;
+
+/**
+ * Get the user's LinkedIn person URN for auto-filling the author parameter.
+ * Fetches once and caches for the session.
+ */
+async function getLinkedInAuthorURN(composio) {
+  if (cachedLinkedInURN) return cachedLinkedInURN;
+
+  try {
+    const result = await composio.tools.execute('LINKEDIN_GET_MY_INFO', {
+      userId: USER_ID,
+      arguments: {},
+      dangerouslySkipVersionCheck: true
+    });
+
+    const data = result?.data || result;
+    const id = data?.id;
+    if (id) {
+      cachedLinkedInURN = `urn:li:person:${id}`;
+      return cachedLinkedInURN;
+    }
+  } catch (e) {
+    console.error('[Composio] Failed to auto-resolve LinkedIn author URN:', e.message);
+  }
+  return null;
+}
 
 /**
  * Execute a tool call via Composio, with schema validation, argument
@@ -720,6 +796,25 @@ async function executeTool(toolName, args) {
     toolkitName = tool.toolkit || '';
 
     const { args: fixedArgs, dropped, missing } = reconcileArgs(tool, args);
+
+    // Auto-resolve LinkedIn author URN for post/comment tools
+    if (resolvedSlug.startsWith('LINKEDIN_CREATE') && !fixedArgs.author) {
+      fixedArgs.author = await getLinkedInAuthorURN(composio);
+      if (!fixedArgs.author) {
+        return {
+          success: false,
+          error: {
+            type: 'MISSING_REQUIRED_PARAMS',
+            toolkit: 'linkedin',
+            message: '"author" is required but could not be auto-resolved. Make sure your LinkedIn account is connected.',
+            suggestion: 'Connect your LinkedIn account first, then retry.'
+          }
+        };
+      }
+      // Remove author from missing if it was there
+      const authorIdx = missing.indexOf('author');
+      if (authorIdx !== -1) missing.splice(authorIdx, 1);
+    }
 
     if (dropped.length > 0) {
       console.log(`[Composio] Dropped unsupported params for ${resolvedSlug}: ${dropped.join(', ')}`);
@@ -1038,6 +1133,28 @@ async function getConnectionStatus(toolkit) {
   return connections?.items || [];
 }
 
+/**
+ * Returns a Set of toolkit slugs that have at least one ACTIVE connection.
+ * Single API call instead of N individual isConnected() calls.
+ */
+async function getConnectedToolkitSlugs() {
+  const composio = await getComposio();
+  try {
+    const accounts = await composio.connectedAccounts.list({ userIds: [USER_ID] });
+    const items = accounts?.items || [];
+    return new Set(
+      items.filter(a => a.status === 'ACTIVE').map(a => {
+        const t = a.toolkit;
+        const slug = typeof t === 'string' ? t : (t?.slug || t?.name || a.appName || '');
+        return slug.toLowerCase();
+      })
+    );
+  } catch (e) {
+    console.error('[Composio] Failed to list connected accounts:', e.message);
+    return new Set();
+  }
+}
+
 async function getConnectUrl(toolkit) {
   const composio = await getComposio();
 
@@ -1054,7 +1171,7 @@ async function getConnectUrl(toolkit) {
     authConfigId = created.id;
   }
 
-  const connectionRequest = await composio.connectedAccounts.link(USER_ID, authConfigId);
+  const connectionRequest = await composio.connectedAccounts.link(USER_ID, authConfigId, { allowMultiple: true });
   return connectionRequest?.redirectUrl || connectionRequest?.redirect_url || null;
 }
 
@@ -1103,9 +1220,11 @@ module.exports = {
   connectDiscoveredToolkit,
   isConnected,
   getConnectionStatus,
+  getConnectedToolkitSlugs,
   getConnectUrl,
   startConnect,
   waitForConnection,
+  getFullCatalog,
   USER_ID,
   DEFAULT_TOOLKITS,
   // Exposed for tests / diagnostics.

@@ -36,6 +36,20 @@ contextBridge.exposeInMainWorld('assistantAPI', {
     toolkitDetail: (toolkit) => ipcRenderer.invoke('composio:toolkitDetail', toolkit),
     isConfigured: () => ipcRenderer.invoke('composio:isConfigured'),
     discoverToolkit: (query) => ipcRenderer.invoke('composio:discoverToolkit', query),
-    connectToolkit: (toolkit) => ipcRenderer.invoke('composio:connectToolkit', toolkit)
+    connectToolkit: (toolkit) => ipcRenderer.invoke('composio:connectToolkit', toolkit),
+    allConnectors: () => ipcRenderer.invoke('composio:allConnectors')
+  },
+  fs: {
+    writeFile: (filePath, content) => ipcRenderer.invoke('fs:writeFile', { filePath, content }),
+    readFile: (filePath) => ipcRenderer.invoke('fs:readFile', { filePath }),
+    listDir: (dirPath) => ipcRenderer.invoke('fs:listDir', { dirPath })
+  },
+  shell: {
+    exec: (command, cwd, timeout) => ipcRenderer.invoke('shell:exec', { command, cwd, timeout })
+  },
+  scheduler: {
+    createTask: (name, scriptPath, triggerTime, daysOfWeek) => ipcRenderer.invoke('scheduler:createTask', { name, scriptPath, triggerTime, daysOfWeek }),
+    listTasks: () => ipcRenderer.invoke('scheduler:listTasks'),
+    deleteTask: (taskName) => ipcRenderer.invoke('scheduler:deleteTask', { taskName })
   }
 });

@@ -1,8 +1,14 @@
+node_modules/
+dist/
+.env
+*.log
+.cache/
+.vite/
+.vite-cache/
+node_modules/.cache/
+
 # Browser profiles
 .browser-profile/
-
-# Other common files to ignore
-*.log
-node_modules/
-.DS_Store
-Thumbs.db
+*.pma
+*.dat
+*.log.old

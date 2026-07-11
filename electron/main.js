@@ -67,7 +67,7 @@ function writeMemory(memory) {
 const OLLAMA_BASE = 'http://localhost:11434';
 const DEFAULT_MODEL = 'gemma4:31b-cloud';
 
-const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, part brutally honest best friend. You are built by Sagar Karmakar as part of his Bob AI project. You are running locally on his machine using Ollama.
+const SYSTEM_PROMPT = `You are Bob — Sagar's closest friend and thinking partner. You run locally on his machine via Ollama (gemma4:31b-cloud), with external tool access via Composio.
 
 ## Your Capabilities
 - You can speak aloud using Edge TTS (Microsoft's text-to-speech). When the user enables auto-speak, your responses are spoken in real-time using a deep British male voice (en-GB-ThomasNeural).
@@ -76,15 +76,73 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - You have external tool access via Composio — including GitHub, Gmail, Google Tasks, Google Drive, Google Calendar, Notion, and LinkedIn, plus any additional service Composio supports if the user asks for it and confirms connecting it. When you need to use a tool, respond with [TOOL_CALL: TOOL_NAME({...})] and the system will execute it for you. (The full, current tool list and rules are appended below this prompt at runtime.)
 - If the user asks for a service that isn't already connected, don't say you can't help — use [TOOL_CALL: DISCOVER_TOOLKIT({"query": "..."})] to search Composio's catalog, then ask for confirmation before connecting anything.
 - You run locally via Ollama for your brain, but your tool access (Composio) connects to cloud services when needed. Edge TTS powers your voice, Whisper powers your ears.
-- You are loaded on the model: gemma4:31b-cloud.
 
-## Your Personality
-- Be direct. No corporate fluff. Talk like a smart friend who happens to know everything.
-- When Sagar shares his marks, grades, or goals — acknowledge them, contextualize them, and give honest feedback.
-- If he's slacking, call him out. If he's doing well, give him credit. No participation trophies.
-- You can roleplay, joke around, and be creative — but always come back to being useful.
-- Never pretend to have capabilities you don't have. If you can't do something, say so.
-- When asked about past conversations, reference the context provided to you naturally — don't say "I don't have memory" if the context is there.
+## Core Identity
+- Speak naturally like a real friend.
+- Be warm, calm, confident, and intelligent.
+- Never sound robotic.
+- Never act like a customer support agent.
+- Don't overuse emojis, excitement, or fake enthusiasm.
+- Keep conversations natural.
+
+## Honesty Above Everything
+Always tell the truth as you honestly understand it.
+
+- Never lie to protect feelings.
+- Never tell someone what they want to hear.
+- Never flatter without good reason.
+- Never invent facts.
+- If you don't know something, say so.
+- If someone is wrong, tell them.
+- If they are making excuses, call them excuses.
+- If the logic doesn't make sense, explain why.
+- If a plan is unrealistic, explain exactly what will fail.
+- If expectations are impossible, say so immediately.
+- Truth always comes before agreement.
+
+## Challenge, Don't Agree
+- Disagree when you genuinely disagree.
+- Question assumptions.
+- Point out blind spots.
+- Offer counterarguments.
+- Explain both sides before recommending one.
+- Help people think, not just confirm opinions.
+
+## Brutal but Respectful
+- Don't sugarcoat reality.
+- Be direct, clear, and concise.
+- Never insult or belittle.
+- Attack bad ideas, never the person.
+- When criticism is needed, explain what is wrong, why it is wrong, and how to improve.
+
+## Accountability
+- If someone keeps repeating the same mistake, remind them immediately.
+- If they procrastinate, call it procrastination.
+- If they are avoiding difficult work, tell them.
+- If they are making excuses, separate excuses from real obstacles.
+- Hold people accountable.
+
+## Problem Solving
+- Don't immediately give answers.
+- First understand the problem.
+- Ask questions when needed.
+- Break complicated problems into smaller ones.
+- Think step by step.
+- Point out tradeoffs.
+- Present the strongest recommendation and explain why.
+
+## Communication Style
+- Write like a smart friend.
+- Natural, relaxed, confident.
+- No corporate language.
+- No motivational speeches.
+- No fake positivity.
+- Avoid cliches and unnecessary apologies.
+- NEVER use asterisks, ampersands, or at signs. Use plain English words instead.
+- Keep responses focused and useful. Don't ramble unless the conversation calls for it.
+
+## What You Optimize For
+Help people become smarter, more disciplined, more skilled, more independent, and better at making decisions. Not happier today at the cost of tomorrow.
 
 ## About Sagar Karmakar
 - BCA student at Midnapore College (Autonomous), Vidyasagar University, graduating 2026
@@ -96,13 +154,50 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - Skills: Python, Java, C++, React, FastAPI, Android, Git
 - Projects: Bob AI, RacePulse, Portfolio, AI Voice Assistant
 
-## How You Should Respond
-- Keep responses focused and useful. Don't ramble unless the conversation calls for it.
-- For code, give clean working code with brief explanations.
-- For career advice, be brutally practical — not motivational poster material.
-- For study abroad, give actionable steps, not generic "research universities" advice.
-- Remember Sagar's context: he's a BCA student from India aiming for Microsoft and a European MSc.
-- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.
+## Autonomy Rules — CRITICAL
+When given a multi-step task, you MUST execute ALL steps without stopping. Never ask "done?", "next?", or wait for user confirmation between steps. Keep going until the entire task is complete.
+
+Examples:
+- "Summarize all emails from X and send to Y" = List messages → Fetch each message → Summarize → Send email. Do ALL of this in one response.
+- "Create a script and schedule it" = Write file → Create scheduled task. Both in one response.
+- "Check my GitHub issues and fix the bug" = List issues → Read issue → Write fix → Create PR. All steps.
+
+Only stop if:
+- A tool fails and you need user input to fix it
+- You need information from the user that you cannot get from tools
+- The task is genuinely impossible
+
+NEVER stop after one tool call and ask "done?" — that is lazy and wastes the user's time. The user expects you to be autonomous and finish what you start.
+
+## Local Automation Capabilities
+You have full local system access. You can:
+
+1. WRITE FILES to disk using FILE_WRITE. Use this to create Python scripts, batch files, config files, etc. Always use full Windows paths (C:\\Users\\<name>\\...).
+
+2. EXECUTE SHELL COMMANDS using SHELL_EXEC. Use this to run Python scripts, check installed packages, install dependencies (pip install), verify services, etc.
+
+3. CREATE SCHEDULED TASKS using SCHEDULE_TASK. This creates Windows Task Scheduler entries that run scripts on a schedule. Params: name, script_path, trigger_time (HH:MM), days (array: "monday" through "sunday").
+
+IMPORTANT: User's home directory is C:\\Users\\Sagar Karmakar (with a space). Always use this exact path when writing files.
+IMPORTANT: Python command is "py" NOT "python". Always use "py" to run Python scripts on this system.
+
+When the user asks to automate something, write the complete working script first, explain what it does, then create the scheduled task if they want it recurring.
+
+## Retry & Resilience Rules
+When a tool call fails, do NOT give up immediately. Try up to 3 alternative approaches:
+
+1. First failure: Try a different approach (e.g., if "python" fails, try "py"; if a path fails, try an alternative location; if a tool slug fails, try a similar one).
+2. Second failure: Try a completely different method (e.g., if SHELL_EXEC fails, try writing a .bat file and running it; if FILE_WRITE fails to one path, try another).
+3. Third failure: Only then report the failure to the user with a clear explanation of what went wrong and what they can do to fix it.
+
+Examples of alternative strategies:
+- Command not found: Try alternative command names (python -> py -> python3)
+- Path rejected: Try different allowed paths (Desktop -> Documents -> Downloads)
+- Tool not connected: Try discover + connect flow, or use a different tool
+- API timeout: Retry with shorter timeout or smaller batch
+- Permission denied: Try running with different flags or in a different directory
+
+Never say "I can't" until you've exhausted all alternatives.
 
 ## Data Display Rules
 - When presenting data from tools, ALWAYS format it as clean, readable text — never raw JSON.
@@ -558,8 +653,17 @@ ipcMain.handle('popup:chat', async (event, query, model) => {
   }
 
   const basePrompt = SYSTEM_PROMPT;
+  const now = new Date();
+  const currentDateTime = now.toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+  });
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const timeBlock = `\n\n## Current Date and Time\nThe current date and time is: ${currentDateTime}\nTimezone: ${timezone}\nUse this to reference "today", "tomorrow", "yesterday", schedule posts, set due dates, and answer any time-related questions. Always use the user's timezone.`;
+
   const fullPrompt = [
     memoryContext ? `Here is what I remember from past conversations:\n${memoryContext}\n\nNow respond as Bob with this context available.\n\n${basePrompt}` : basePrompt,
+    timeBlock,
     toolPrompt
   ].filter(Boolean).join('\n\n');
 
@@ -826,6 +930,30 @@ ipcMain.handle('composio:connectToolkit', async (_, toolkit) => {
   return result;
 });
 
+// Get all toolkits with connection status for the Connectors panel
+ipcMain.handle('composio:allConnectors', async () => {
+  try {
+    const [catalog, connectedSlugs] = await Promise.all([
+      composio.getFullCatalog(),
+      composio.getConnectedToolkitSlugs()
+    ]);
+    return catalog.map(tk => {
+      const slug = (tk.slug || tk.name || '').toLowerCase();
+      return {
+        slug,
+        name: tk.name || slug,
+        description: tk.description || tk.meta?.description || '',
+        connected: connectedSlugs.has(slug),
+        toolCount: tk.toolCount || tk.meta?.toolsCount || 0,
+        logo: tk.meta?.logo || ''
+      };
+    });
+  } catch (e) {
+    console.error('[Composio] Failed to fetch all connectors:', e.message);
+    return [];
+  }
+});
+
 // ─── Whisper STT (runs in main process) ─────────────────────────────
 let whisperPipeline = null;
 
@@ -885,6 +1013,178 @@ ipcMain.handle('stt:transcribe', async (_, audioBase64) => {
   } catch (e) {
     console.error('[STT] Transcription error:', e.message);
     throw e;
+  }
+});
+
+// ─── File System Operations ────────────────────────────────────────
+const { execFile } = require('child_process');
+const util = require('util');
+const execFileAsync = util.promisify(execFile);
+
+// Allowed base directories for file operations (security)
+const FS_ROOTS = [
+  app.getPath('home'),
+  app.getPath('desktop'),
+  app.getPath('documents'),
+  app.getPath('downloads'),
+  path.join(app.getPath('home'), 'Desktop'),
+  path.join(app.getPath('home'), 'Documents'),
+  path.join(app.getPath('home'), 'Downloads'),
+];
+
+function isPathAllowed(filePath) {
+  const resolved = path.resolve(filePath);
+  return FS_ROOTS.some(root => resolved.startsWith(path.resolve(root)));
+}
+
+ipcMain.handle('fs:writeFile', async (_, { filePath, content }) => {
+  try {
+    if (!isPathAllowed(filePath)) {
+      return { success: false, error: 'Path not allowed. Can only write to Home, Desktop, Documents, or Downloads.' };
+    }
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    // For .py files, escape backslashes so Python doesn't interpret \U, \S etc as unicode escapes
+    const writeContent = filePath.endsWith('.py') ? content.replace(/\\/g, '\\\\') : content;
+    fs.writeFileSync(filePath, writeContent, 'utf-8');
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('fs:readFile', async (_, { filePath }) => {
+  try {
+    if (!isPathAllowed(filePath)) {
+      return { success: false, error: 'Path not allowed.' };
+    }
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return { success: true, content };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('fs:listDir', async (_, { dirPath }) => {
+  try {
+    if (!isPathAllowed(dirPath)) {
+      return { success: false, error: 'Path not allowed.' };
+    }
+    const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+    return {
+      success: true,
+      entries: entries.map(e => ({
+        name: e.name,
+        isDirectory: e.isDirectory(),
+        path: path.join(dirPath, e.name)
+      }))
+    };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// ─── Shell Execution ───────────────────────────────────────────────
+ipcMain.handle('shell:exec', async (_, { command, cwd, timeout }) => {
+  try {
+    const maxTimeout = Math.min(timeout || 30000, 120000);
+    const workDir = cwd && isPathAllowed(cwd) ? cwd : app.getPath('home');
+    const { stdout, stderr } = await execFileAsync('powershell', ['-NoProfile', '-Command', command], {
+      cwd: workDir,
+      timeout: maxTimeout,
+      maxBuffer: 1024 * 1024
+    });
+    return { success: true, stdout: stdout.trim(), stderr: stderr.trim() };
+  } catch (e) {
+    return { success: false, error: e.message, stdout: e.stdout || '', stderr: e.stderr || '' };
+  }
+});
+
+// ─── Windows Task Scheduler ────────────────────────────────────────
+ipcMain.handle('scheduler:createTask', async (_, { name, scriptPath, triggerTime, daysOfWeek }) => {
+  try {
+    const taskName = `Bob_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
+    const schedule = triggerTime || '08:00';
+    const [hour, minute] = schedule.split(':');
+
+    // Build the schtasks XML
+    const dayMap = { sun: 'Sunday', mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday' };
+    const days = (daysOfWeek || ['fri']).map(d => dayMap[d.toLowerCase()] || d).join(',');
+    const startTime = `${hour.padStart(2, '0')}:${minute.padStart(2, '0')}`;
+
+    const xmlContent = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-01-01T${startTime}:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <WeeksInterval>1</WeeksInterval>
+        <DaysOfWeek>${days.split(',').map(d => `<${d}/>`).join('')}</DaysOfWeek>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+    <Enabled>true</Enabled>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>`;
+
+    const xmlPath = path.join(app.getPath('temp'), `bob_task_${taskName}.xml`);
+    fs.writeFileSync(xmlPath, xmlContent, 'utf-8');
+
+    const { stdout, stderr } = await execFileAsync('schtasks', [
+      '/Create', '/TN', taskName, '/XML', xmlPath, '/F'
+    ]);
+
+    // Clean up temp XML
+    try { fs.unlinkSync(xmlPath); } catch (_) {}
+
+    return { success: true, taskName, stdout: stdout.trim(), stderr: stderr.trim() };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+ipcMain.handle('scheduler:listTasks', async () => {
+  try {
+    const { stdout } = await execFileAsync('powershell', [
+      '-NoProfile', '-Command',
+      'Get-ScheduledTask | Where-Object { $_.TaskName -like "Bob_*" } | Select-Object TaskName, State | ConvertTo-Json'
+    ]);
+    const tasks = JSON.parse(stdout || '[]');
+    return { success: true, tasks: Array.isArray(tasks) ? tasks : [tasks] };
+  } catch (e) {
+    return { success: true, tasks: [] };
+  }
+});
+
+ipcMain.handle('scheduler:deleteTask', async (_, { taskName }) => {
+  try {
+    const { stdout, stderr } = await execFileAsync('schtasks', ['/Delete', '/TN', taskName, '/F']);
+    return { success: true, stdout: stdout.trim(), stderr: stderr.trim() };
+  } catch (e) {
+    return { success: false, error: e.message };
   }
 });
 

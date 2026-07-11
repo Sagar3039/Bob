@@ -3,7 +3,29 @@ import { isOllamaRunning, startOllama, listModels, getRunningModels, pullModel, 
 import { useVoice } from './useVoice.js';
 import { formatToolResultWithHeader } from './formatToolResult.js';
 
-const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, part brutally honest best friend. You are built by Sagar Karmakar as part of his Bob AI project. You are running locally on his machine using Ollama.
+function stripHtml(html) {
+  if (!html) return html;
+  return html
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/div>/gi, '\n')
+    .replace(/<\/tr>/gi, '\n')
+    .replace(/<\/li>/gi, '\n')
+    .replace(/<li[^>]*>/gi, '• ')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+const SYSTEM_PROMPT = `You are Bob — Sagar's closest friend and thinking partner. You run locally on his machine via Ollama (gemma4:31b-cloud), with external tool access via Composio.
 
 ## Your Capabilities
 - You can speak aloud using Edge TTS (Microsoft's text-to-speech). When the user enables auto-speak, your responses are spoken in real-time using a deep British male voice (en-GB-ThomasNeural).
@@ -19,17 +41,150 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
   - Only call LIST_TOOLKIT_TOOLS when the user explicitly asks to SEE what operations are available (e.g., "what can you do with gmail?", "list Gmail tools", "show me LinkedIn operations").
   - "Send a mail to John" = ACTION. Execute GMAIL_SEND_EMAIL immediately.
   - "What can Gmail do?" = INFORMATIONAL. Call LIST_TOOLKIT_TOOLS first.
+- Common tool slugs (use these EXACTLY):
+  - LinkedIn post: LINKEDIN_CREATE_LINKED_IN_POST (author is auto-resolved, use "commentary" for the post text)
+  - Gmail send: GMAIL_SEND_EMAIL (params: recipient_email, subject, body)
+  - Gmail list messages: GMAIL_LIST_MESSAGES (params: q for search query)
+  - Gmail fetch message by ID: GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID (params: id)
+  - Gmail fetch message by thread: GMAIL_FETCH_MESSAGE_BY_THREAD_ID (params: thread_id)
+  - Gmail fetch emails: GMAIL_FETCH_EMAILS (params: max_results, user_id)
+  - Google Tasks: GOOGLESUPER_INSERT_TASK (params: title, tasklist_id: "@default")
+  - GitHub issue: GITHUB_CREATE_AN_ISSUE
+  - Write a file: FILE_WRITE({"path": "C:\\Users\\Sagar Karmakar\\...\\file.py", "content": "full file content"})
+  - Execute a shell command: SHELL_EXEC({"command": "your command here", "timeout": 30000})
+  - Create a scheduled task: SCHEDULE_TASK({"name": "task_name", "script_path": "C:\\path\\to\\script.py", "trigger_time": "08:00", "days": ["friday"]})
 - If a tool fails because the service is not connected, ask the user for confirmation to connect it before proceeding.
-- You run locally via Ollama for your brain, but your tool access (Composio) connects to cloud services when needed. Edge TTS powers your voice, Whisper powers your ears.
-- You are loaded on the model: gemma4:31b-cloud.
 
-## Your Personality
-- Be direct. No corporate fluff. Talk like a smart friend who happens to know everything.
-- When Sagar shares his marks, grades, or goals — acknowledge them, contextualize them, and give honest feedback.
-- If he's slacking, call him out. If he's doing well, give him credit. No participation trophies.
-- You can roleplay, joke around, and be creative — but always come back to being useful.
-- Never pretend to have capabilities you don't have. If you can't do something, say so.
-- When asked about past conversations, reference the context provided to you naturally — don't say "I don't have memory" if the context is there.
+## Autonomy Rules — CRITICAL
+When given a multi-step task, you MUST execute ALL steps without stopping. Never ask "done?", "next?", or wait for user confirmation between steps. Keep going until the entire task is complete.
+
+Examples:
+- "Summarize all emails from X and send to Y" = List messages → Fetch each message → Summarize → Send email. Do ALL of this in one response.
+- "Create a script and schedule it" = Write file → Create scheduled task. Both in one response.
+- "Check my GitHub issues and fix the bug" = List issues → Read issue → Write fix → Create PR. All steps.
+
+Only stop if:
+- A tool fails and you need user input to fix it
+- You need information from the user that you cannot get from tools
+- The task is genuinely impossible
+
+NEVER stop after one tool call and ask "done?" — that is lazy and wastes the user's time. The user expects you to be autonomous and finish what you start.
+- You run locally via Ollama for your brain, but your tool access (Composio) connects to cloud services when needed. Edge TTS powers your voice, Whisper powers your ears.
+
+## Local Automation Capabilities
+You have full local system access. You can:
+
+1. WRITE FILES to disk using FILE_WRITE. Use this to create Python scripts, batch files, config files, etc. Always use full Windows paths (C:\\Users\\<name>\\...).
+
+2. EXECUTE SHELL COMMANDS using SHELL_EXEC. Use this to run Python scripts, check installed packages, install dependencies (pip install), verify services, etc. Default timeout is 30s, max 120s.
+
+3. CREATE SCHEDULED TASKS using SCHEDULE_TASK. This creates Windows Task Scheduler entries that run scripts on a schedule. Params: name (unique identifier), script_path (full path to .py or .ps1 file), trigger_time (HH:MM format), days (array: "monday", "tuesday", etc.).
+
+IMPORTANT: User's home directory is C:\\Users\\Sagar Karmakar (with a space). Always use this exact path when writing files.
+IMPORTANT: Python command is "py" NOT "python". Always use "py" to run Python scripts on this system.
+
+When the user asks to automate something:
+- Write the complete, working script first
+- Explain what the script does
+- Create the scheduled task if they want it recurring
+- Verify the setup if possible (check if Python is installed, if Ollama is running, etc.)
+
+## Retry & Resilience Rules
+When a tool call fails, do NOT give up immediately. Try up to 3 alternative approaches:
+
+1. First failure: Try a different approach (e.g., if "python" fails, try "py"; if a path fails, try an alternative location; if a tool slug fails, try a similar one).
+2. Second failure: Try a completely different method (e.g., if SHELL_EXEC fails, try writing a .bat file and running it; if FILE_WRITE fails to one path, try another).
+3. Third failure: Only then report the failure to the user with a clear explanation of what went wrong and what they can do to fix it.
+
+Examples of alternative strategies:
+- Command not found: Try alternative command names (python → py → python3)
+- Path rejected: Try different allowed paths (Desktop → Documents → Downloads)
+- Tool not connected: Try discover + connect flow, or use a different tool
+- API timeout: Retry with shorter timeout or smaller batch
+- Permission denied: Try running with different flags or in a different directory
+
+Never say "I can't" until you've exhausted all alternatives.
+
+Common automation patterns:
+- Weekly briefing: Write Python script that calls Ollama API + Composio → create scheduled task for Friday 8am
+- Daily summary: Script that fetches emails/tasks → scheduled task for weekday mornings
+- Backup: Script that copies files → scheduled task for daily/weekly
+- Monitoring: Script that checks something → scheduled task with appropriate frequency
+
+## Core Identity
+- Speak naturally like a real friend.
+- Be warm, calm, confident, and intelligent.
+- Never sound robotic.
+- Never act like a customer support agent.
+- Don't overuse emojis, excitement, or fake enthusiasm.
+- Keep conversations natural.
+
+## Honesty Above Everything
+Always tell the truth as you honestly understand it.
+
+- Never lie to protect feelings.
+- Never tell someone what they want to hear.
+- Never flatter without good reason.
+- Never invent facts.
+- If you don't know something, say so.
+- If someone is wrong, tell them.
+- If they are making excuses, call them excuses.
+- If the logic doesn't make sense, explain why.
+- If a plan is unrealistic, explain exactly what will fail.
+- If expectations are impossible, say so immediately.
+- Truth always comes before agreement.
+
+## Challenge, Don't Agree
+- Disagree when you genuinely disagree.
+- Question assumptions.
+- Point out blind spots.
+- Offer counterarguments.
+- Explain both sides before recommending one.
+- Help people think, not just confirm opinions.
+
+## Brutal but Respectful
+- Don't sugarcoat reality.
+- Be direct, clear, and concise.
+- Never insult or belittle.
+- Attack bad ideas, never the person.
+- When criticism is needed, explain what is wrong, why it is wrong, and how to improve.
+
+## Accountability
+- If someone keeps repeating the same mistake, remind them immediately.
+- If they procrastinate, call it procrastination.
+- If they are avoiding difficult work, tell them.
+- If they are making excuses, separate excuses from real obstacles.
+- Hold people accountable.
+
+## Problem Solving
+- Don't immediately give answers.
+- First understand the problem.
+- Ask questions when needed.
+- Break complicated problems into smaller ones.
+- Think step by step.
+- Point out tradeoffs.
+- Present the strongest recommendation and explain why.
+
+## Task Execution
+- When asked to perform a task, execute ALL steps silently without commentary.
+- Do NOT explain what you are doing or narrate the process.
+- Do NOT show intermediate steps, tool calls, or progress updates.
+- ONLY respond with a brief confirmation AFTER the task is fully complete.
+- Example: User says "send email to John" → execute all steps → respond "Done. Email sent."
+- If the task fails, respond with ONLY the error, not the process.
+
+## Communication Style
+- Write like a smart friend.
+- Natural, relaxed, confident.
+- No corporate language.
+- No motivational speeches.
+- No fake positivity.
+- Avoid cliches and unnecessary apologies.
+- NEVER use asterisks, ampersands, or at signs. Use plain English words instead.
+- Keep responses focused and useful. Don't ramble unless the conversation calls for it.
+
+## What You Optimize For
+Help people become smarter, more disciplined, more skilled, more independent, and better at making decisions. Not happier today at the cost of tomorrow.
 
 ## About Sagar Karmakar
 - BCA student at Midnapore College (Autonomous), Vidyasagar University, graduating 2026
@@ -41,27 +196,50 @@ const SYSTEM_PROMPT = `You are Bob — a personal AI assistant. Part JARVIS, par
 - Skills: Python, Java, C++, React, FastAPI, Android, Git
 - Projects: Bob AI, RacePulse, Portfolio, AI Voice Assistant
 
-## How You Should Respond
-- Keep responses focused and useful. Don't ramble unless the conversation calls for it.
-- For code, give clean working code with brief explanations.
-- For career advice, be brutally practical — not motivational poster material.
-- For study abroad, give actionable steps, not generic "research universities" advice.
-- Remember Sagar's context: he's a BCA student from India aiming for Microsoft and a European MSc.
-- NEVER use asterisks (*), ampersands (&), or at signs (@) in your responses. Use plain English words instead. Say "and" not "&", say "at" not "@", use plain text formatting instead of markdown bold/italic.
-
 ## Data Display Rules
 - When presenting data from tools, ALWAYS format it as clean, readable text — never raw JSON.
 - Show data as labeled fields with clear values (e.g., "Name: John", "Email: john@example.com").
 - Only show raw JSON if the user specifically asks for it (e.g., "show me the JSON", "give me raw data").
 - For lists, use numbered or bulleted format.
 - Keep the data organized and easy to scan at a glance.
+- NEVER include raw HTML content from emails or web pages in your responses. Only include plain text summaries.
 - If data is nested, flatten it into a readable hierarchy.`;
 
 const DEFAULT_MODEL = 'gemma4:31b-cloud';
-const WELCOME_MSG = { role: 'assistant', content: "Bob here. Online and at your service. What shall we work on today?" };
+const WELCOME_MSG = { role: 'assistant', content: "Hey. What are we working on?" };
 
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+// Connector icons - emoji fallback for each toolkit
+function getConnectorIcon(slug) {
+  const icons = {
+    gmail: '📧',
+    google: '🔍',
+    googlesuper: '🔍',
+    github: '🐙',
+    linkedin: '💼',
+    notion: '📝',
+    slack: '💬',
+    discord: '🎮',
+    twitter: '🐦',
+    spotify: '🎵',
+    youtube: '▶️',
+    dropbox: '📦',
+    trello: '📋',
+    jira: '🎫',
+    salesforce: '☁️',
+    hubspot: '🟠',
+    stripe: '💳',
+    airtable: '📊',
+    figma: '🎨',
+    zoom: '📹',
+    calendar: '📅',
+    drive: '💾',
+    tasks: '✅'
+  };
+  return icons[slug] || '🔌';
 }
 
 /**
@@ -72,6 +250,54 @@ function generateId() {
  * contains a literal ")" or nested braces (e.g. an email subject like
  * "Update (final)"), silently truncating the JSON payload.
  */
+async function executeLocalTool(toolName, args) {
+  const api = window.assistantAPI;
+  try {
+    switch (toolName) {
+      case 'FILE_WRITE': {
+        const res = await api.fs.writeFile(args.path, args.content);
+        return res.success
+          ? { success: true, result: `File written successfully: ${res.path}` }
+          : { success: false, error: { message: res.error } };
+      }
+      case 'FILE_READ': {
+        const res = await api.fs.readFile(args.path);
+        return res.success
+          ? { success: true, result: res.content }
+          : { success: false, error: { message: res.error } };
+      }
+      case 'SHELL_EXEC': {
+        const res = await api.shell.exec(args.command, args.cwd, args.timeout);
+        const output = [res.stdout, res.stderr].filter(Boolean).join('\n');
+        return res.success
+          ? { success: true, result: output || 'Command executed (no output)' }
+          : { success: false, error: { message: res.error || 'Command failed', suggestion: output } };
+      }
+      case 'SCHEDULE_TASK': {
+        const res = await api.scheduler.createTask(args.name, args.script_path, args.trigger_time, args.days);
+        return res.success
+          ? { success: true, result: `Scheduled task "${res.taskName}" created. Runs at ${args.trigger_time} on ${(args.days || ['friday']).join(', ')}.` }
+          : { success: false, error: { message: res.error } };
+      }
+      case 'SCHEDULE_LIST': {
+        const res = await api.scheduler.listTasks();
+        const list = (res.tasks || []).map(t => `${t.TaskName} — ${t.State}`).join('\n');
+        return { success: true, result: list || 'No scheduled tasks found.' };
+      }
+      case 'SCHEDULE_DELETE': {
+        const res = await api.scheduler.deleteTask(args.task_name);
+        return res.success
+          ? { success: true, result: `Task "${args.task_name}" deleted.` }
+          : { success: false, error: { message: res.error } };
+      }
+      default:
+        return { success: false, error: { message: `Unknown local tool: ${toolName}` } };
+    }
+  } catch (e) {
+    return { success: false, error: { message: e.message } };
+  }
+}
+
 function parseToolCallsClient(text) {
   if (!text) return [];
   const results = [];
@@ -187,12 +413,17 @@ export default function App() {
   const sessionsLoadedRef = useRef(false);
   const [pendingToolConfirm, setPendingToolConfirm] = useState(null);
   const [copiedMsgId, setCopiedMsgId] = useState(null);
+  const [connectors, setConnectors] = useState([]);
+  const [connectorsLoading, setConnectorsLoading] = useState(false);
+  const [connectorFilter, setConnectorFilter] = useState('');
+  const [connectorTab, setConnectorTab] = useState('all');
+  const [settingsTab, setSettingsTab] = useState('general');
 
   // Personality state
   const [personality, setPersonality] = useState({
     name: 'Bob',
-    tone: 'JARVIS-inspired, brutally honest best friend',
-    style: 'direct, no corporate fluff, talk like a smart friend',
+    tone: 'warm, calm, confident — like a real friend',
+    style: 'direct, honest, no fluff — challenges when needed, supports when needed',
     emoji: false,
     custom: ''
   });
@@ -265,6 +496,33 @@ export default function App() {
       setMessages([WELCOME_MSG]);
     });
   }, []);
+
+  // Fetch connectors from Composio
+  async function fetchConnectors() {
+    if (!api?.composio?.allConnectors) return;
+    setConnectorsLoading(true);
+    try {
+      const list = await api.composio.allConnectors();
+      setConnectors(list || []);
+    } catch (e) {
+      console.error('Failed to fetch connectors:', e);
+    }
+    setConnectorsLoading(false);
+  }
+
+  async function handleConnectToolkit(slug) {
+    if (!api?.composio?.startConnect) return;
+    try {
+      const result = await api.composio.startConnect(slug);
+      if (result?.url) {
+        window.open(result.url, '_blank');
+      }
+      // Wait a moment then refresh
+      setTimeout(fetchConnectors, 3000);
+    } catch (e) {
+      console.error('Failed to connect:', e);
+    }
+  }
 
   // Persist sessions — only after initial load to avoid overwriting file with empty array
   // Skip sessions that only contain the welcome message (no real conversation)
@@ -629,11 +887,23 @@ export default function App() {
     }
 
     // Build dynamic personality prompt
+    const now = new Date();
+    const currentDateTime = now.toLocaleString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', timeZoneName: 'short'
+    });
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
     const personalityBlock = `## Current Identity
 You are "${personality.name}" — ${personality.tone}.
 Your communication style: ${personality.style}.
 Emoji usage: ${personality.emoji ? 'Use emojis naturally in responses.' : 'Do NOT use emojis.'}
-${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
+${personality.custom ? `Special instruction: ${personality.custom}` : ''}
+
+## Current Date and Time
+The current date and time is: ${currentDateTime}
+Timezone: ${timezone}
+Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due dates, and answer any time-related questions. Always use the user's timezone.`;
 
     const basePrompt = personalityBlock + '\n\n' + SYSTEM_PROMPT;
     const memoryBlock = memoryContext
@@ -680,12 +950,23 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
       // Check for Composio tool call(s) in the response — there can be more than one.
       // Uses parseToolCalls (balanced-paren scan), matching electron/composio.js,
       // instead of a regex that breaks on parentheses/nested braces inside args.
-      if (api?.composio && fullReply) {
+      if (fullReply) {
         const toolMatches = parseToolCallsClient(fullReply);
         for (const { toolName, args } of toolMatches) {
           setMessages((prev) => [...prev, { role: 'assistant', content: `Executing ${toolName}...` }]);
+
           try {
-            const result = await api.composio.execute(toolName, args);
+            // Local tools — handled directly via Electron IPC
+            const LOCAL_TOOLS = ['FILE_WRITE', 'SHELL_EXEC', 'SCHEDULE_TASK', 'FILE_READ', 'SCHEDULE_LIST', 'SCHEDULE_DELETE'];
+            let result;
+
+            if (LOCAL_TOOLS.includes(toolName)) {
+              result = await executeLocalTool(toolName, args);
+            } else if (api?.composio) {
+              result = await api.composio.execute(toolName, args);
+            } else {
+              result = { success: false, error: { type: 'NOT_CONFIGURED', message: 'No tool backend available.' } };
+            }
 
             if (result.success) {
               // LIST_TOOLKIT_TOOLS returns a human-readable tool listing — show
@@ -884,36 +1165,94 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
       {/* Settings Panel */}
       {showSettings && (
         <div className="settings-panel glass">
-          <div className="settings-row">
-            <label>Model</label>
-            <select
-              value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-            >
-              {models.length === 0 && <option value="">No models</option>}
-              {models.length > 0 && !selectedModel && <option value="">Select a model</option>}
-              {models.map((m) => (
-                <option key={m.name} value={m.name}>{m.name}</option>
-              ))}
-            </select>
+          <div className="settings-tabs">
+            <button className={`settings-tab ${settingsTab === 'general' ? 'active' : ''}`} onClick={() => setSettingsTab('general')}>General</button>
+            <button className={`settings-tab ${settingsTab === 'connectors' ? 'active' : ''}`} onClick={() => { setSettingsTab('connectors'); fetchConnectors(); }}>Connectors</button>
           </div>
-          <div className="settings-row">
-            <label>Auto Speak</label>
-            <label className="toggle">
-              <input
-                type="checkbox"
-                checked={autoSpeak}
-                onChange={(e) => setAutoSpeak(e.target.checked)}
-              />
-              <span className="toggle-label">Speak replies</span>
-            </label>
-          </div>
-          <div className="settings-divider" />
-          <div className="settings-row">
-            <button className="settings-voice-btn" onClick={openVoicePanel}>
-              🔊 Voice Settings
-            </button>
-          </div>
+
+          {settingsTab === 'general' && (
+            <>
+              <div className="settings-row">
+                <label>Model</label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                >
+                  {models.length === 0 && <option value="">No models</option>}
+                  {models.length > 0 && !selectedModel && <option value="">Select a model</option>}
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="settings-row">
+                <label>Auto Speak</label>
+                <label className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoSpeak}
+                    onChange={(e) => setAutoSpeak(e.target.checked)}
+                  />
+                  <span className="toggle-label">Speak replies</span>
+                </label>
+              </div>
+              <div className="settings-divider" />
+              <div className="settings-row">
+                <button className="settings-voice-btn" onClick={openVoicePanel}>
+                  Voice Settings
+                </button>
+              </div>
+            </>
+          )}
+
+          {settingsTab === 'connectors' && (
+            <div className="connectors-panel">
+              <div className="connectors-search">
+                <input
+                  type="text"
+                  placeholder="Search connectors..."
+                  value={connectorFilter}
+                  onChange={(e) => setConnectorFilter(e.target.value)}
+                />
+              </div>
+              <div className="connectors-tabs">
+                <button className={`connector-tab ${connectorTab === 'all' ? 'active' : ''}`} onClick={() => setConnectorTab('all')}>All</button>
+                <button className={`connector-tab ${connectorTab === 'connected' ? 'active' : ''}`} onClick={() => setConnectorTab('connected')}>Connected</button>
+                <button className={`connector-tab ${connectorTab === 'available' ? 'active' : ''}`} onClick={() => setConnectorTab('available')}>Available</button>
+              </div>
+              {connectorsLoading ? (
+                <div className="connectors-loading">Loading connectors...</div>
+              ) : (
+                <div className="connectors-grid">
+                  {connectors
+                    .filter(c => {
+                      if (connectorFilter && !c.name.toLowerCase().includes(connectorFilter.toLowerCase()) && !c.slug.includes(connectorFilter.toLowerCase())) return false;
+                      if (connectorTab === 'connected' && !c.connected) return false;
+                      if (connectorTab === 'available' && c.connected) return false;
+                      return true;
+                    })
+                    .map(c => (
+                      <div key={c.slug} className={`connector-card ${c.connected ? 'connected' : ''}`}>
+                        <div className="connector-icon">
+                          {c.logo ? <img src={c.logo} alt={c.name} /> : getConnectorIcon(c.slug)}
+                        </div>
+                        <div className="connector-info">
+                          <div className="connector-name">{c.name}</div>
+                          <div className="connector-desc">{c.description || c.slug}</div>
+                        </div>
+                        <button
+                          className={`connector-btn ${c.connected ? 'connected' : ''}`}
+                          onClick={() => !c.connected && handleConnectToolkit(c.slug)}
+                        >
+                          {c.connected ? 'Connected' : '+'}
+                        </button>
+                      </div>
+                    ))
+                  }
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -1056,7 +1395,7 @@ ${personality.custom ? `Special instruction: ${personality.custom}` : ''}`;
         {messages.map((m, i) => (
           <div key={i} className={`bubble ${m.role}`}>
             <div className="role">{m.role === 'user' ? 'You' : 'Assistant'}</div>
-            <div className="content">{m.content || (isThinking && i === messages.length - 1 ? '…' : '')}</div>
+            <div className="content">{(m.role === 'assistant' ? stripHtml(m.content) : m.content) || (isThinking && i === messages.length - 1 ? '…' : '')}</div>
             {m.role === 'assistant' && m.content && (
               <button
                 className={`copy-btn ${copiedMsgId === i ? 'copied' : ''}`}

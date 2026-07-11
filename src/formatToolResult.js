@@ -148,22 +148,19 @@ function formatByType(data, toolName) {
     if (parts.length > 0) return parts.join('\n');
   }
 
-  // Gmail messages (fetched emails with payload headers)
+  // Gmail messages - metadata only, no private content
   if (str.includes('snippet') || str.includes('payload')) {
     const parts = [];
     const headers = data.payload?.headers || [];
     const getHeader = (name) => headers.find(h => h.name === name)?.value || '';
 
     const from = getHeader('From');
-    const to = getHeader('To');
     const subject = getHeader('Subject');
     const date = getHeader('Date');
 
     if (from) parts.push(`From: ${from}`);
-    if (to) parts.push(`To: ${to}`);
     if (subject) parts.push(`Subject: ${subject}`);
     if (date) parts.push(`Date: ${date}`);
-    if (data.snippet) parts.push(`Preview: ${data.snippet}`);
     if (data.id) parts.push(`ID: ${data.id}`);
 
     if (parts.length > 0) return parts.join('\n');

@@ -81,7 +81,7 @@ body {
   position: absolute;
   top: 64px;
   right: 16px;
-  width: 280px;
+  width: 320px;
   padding: 16px;
   border-radius: 14px;
   background: rgba(40, 40, 42, 0.92);
@@ -146,6 +146,209 @@ body {
 
 .settings-voice-btn:hover {
   background: rgba(255, 255, 255, 0.15);
+}
+
+/* ---- Settings Tabs ---- */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.settings-tab {
+  flex: 1;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.settings-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.settings-tab.active {
+  background: rgba(0, 122, 255, 0.3);
+  color: #fff;
+}
+
+/* ---- Connectors Panel ---- */
+.connectors-panel {
+  max-height: 400px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+.connectors-panel::-webkit-scrollbar {
+  width: 4px;
+}
+
+.connectors-panel::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+
+.connectors-search {
+  margin-bottom: 10px;
+}
+
+.connectors-search input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.connectors-search input:focus {
+  border-color: rgba(0, 122, 255, 0.5);
+}
+
+.connectors-search input::placeholder {
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.connectors-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.connector-tab {
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.connector-tab:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.connector-tab.active {
+  background: rgba(0, 122, 255, 0.3);
+  border-color: rgba(0, 122, 255, 0.4);
+  color: #fff;
+}
+
+.connectors-loading {
+  text-align: center;
+  padding: 24px;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 13px;
+}
+
+.connectors-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.connector-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+  transition: all 0.2s;
+}
+
+.connector-card:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.connector-card.connected {
+  border-color: rgba(48, 209, 88, 0.3);
+  background: rgba(48, 209, 88, 0.08);
+}
+
+.connector-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  flex-shrink: 0;
+  overflow: hidden;
+}
+.connector-icon img {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
+.connector-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.connector-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.connector-desc {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.connector-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.connector-btn:hover {
+  background: rgba(0, 122, 255, 0.4);
+  border-color: rgba(0, 122, 255, 0.5);
+}
+
+.connector-btn.connected {
+  background: rgba(48, 209, 88, 0.3);
+  border-color: rgba(48, 209, 88, 0.4);
+  color: #30d158;
+  font-size: 11px;
+  width: auto;
+  padding: 0 10px;
 }
 
 select {
