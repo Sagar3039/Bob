@@ -52,6 +52,35 @@ const TOOLKIT_DESCRIPTIONS = {
   linkedin: 'Get profile info, create posts, manage content'
 };
 
+function unwrapListResponse(response) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.items)) return response.items;
+  if (Array.isArray(response?.data)) return response.data;
+  if (Array.isArray(response?.tools)) return response.tools;
+  return [];
+}
+
+async function getRawTools(composio, toolkit) {
+  const response = await composio.tools.getRawComposioTools({
+    toolkits: [toolkit],
+    limit: TOOL_FETCH_LIMIT
+  });
+  return unwrapListResponse(response);
+}
+
+function getToolkitSlug(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value.toLowerCase();
+  return (value.slug || value.name || value.key || '').toLowerCase();
+}
+
+async function getToolkitCatalogPage(composio, params) {
+  if (composio.toolkits?.get) return composio.toolkits.get(params);
+  if (composio.toolkits?.list) return composio.toolkits.list(params);
+  if (composio.apps?.list) return composio.apps.list(params);
+  throw new Error('This Composio SDK version does not expose a toolkit catalog API.');
+}
+
 // ---------------------------------------------------------------------------
 // Core client
 // ---------------------------------------------------------------------------
@@ -102,7 +131,7 @@ async function getToolkitSummary() {
 
   const results = await Promise.allSettled(
     DEFAULT_TOOLKITS.map(async (tk) => {
-      const tools = await composio.tools.getRawComposioTools({ toolkits: [tk], limit: TOOL_FETCH_LIMIT });
+      const tools = await getRawTools(composio, tk);
       return {
         name: tk,
         displayName: displayName(tk),
@@ -153,9 +182,10 @@ async function getToolsForPrompt(toolkits) {
 
   for (const tk of kits) {
     try {
-      const tools = await composio.tools.getRawComposioTools({ toolkits: [tk], limit: TOOL_FETCH_LIMIT });
+      const tools = await getRawTools(composio, tk);
       for (const t of tools) {
         const info = normalizeTool(t, tk);
+        if (!info.slug) continue;
         allTools.push(info);
         cachedTools.set(info.slug, info);
       }
@@ -170,10 +200,10 @@ async function getToolsForPrompt(toolkits) {
 function normalizeTool(t, fallbackToolkit) {
   return {
     name: t.name || t.slug,
-    slug: t.slug,
+    slug: t.slug || t.name,
     description: t.description || '',
     inputSchema: t.inputParameters || t.inputSchema || { type: 'object', properties: {}, required: [] },
-    toolkit: typeof t.toolkit === 'string' ? t.toolkit : (t.toolkit?.name || t.toolkit?.slug || fallbackToolkit),
+    toolkit: getToolkitSlug(t.toolkit) || getToolkitSlug(t.toolkitSlug) || fallbackToolkit,
     version: t.version || ''
   };
 }
@@ -196,14 +226,22 @@ function buildToolPrompt(tools) {
   }
 
   const toolkitList = Object.entries(byToolkit)
-    .map(([tk, tkTools]) => `${displayName(tk)} (${tkTools.length} tools)`)
+    .map(([tk, tkTools]) => {
+      // Prefer a real tool count when the caller supplied one (the lightweight
+      // toolkit summary carries toolCount); otherwise fall back to how many
+      // entries we grouped. Never claim "1 tools" for a whole service.
+      const count = tkTools.reduce((sum, t) => sum + (Number(t.toolCount) || 0), 0) || tkTools.length;
+      return `${displayName(tk)} (${count} tools)`;
+    })
     .join(', ');
 
+  // Only build a generic example when we actually have a tool with a real slug
+  // and schema. The lightweight summary entries have neither, and emitting
+  // "[TOOL_CALL: undefined({})]" would teach the model a broken pattern.
   let exampleLine = '';
-  if (tools.length > 0) {
-    const ex = tools[0];
+  const ex = tools.find(t => t.slug);
+  if (ex) {
     const schema = ex.inputSchema || {};
-    const props = schema.properties || {};
     const required = schema.required || [];
     const sampleArgs = {};
     for (const key of required.slice(0, 3)) {
@@ -604,12 +642,12 @@ async function getFullCatalog() {
   let cursor;
 
   do {
-    const page = await composio.toolkits.get({ cursor, limit: 200 });
+    const page = await getToolkitCatalogPage(composio, { cursor, limit: 200 });
     if (Array.isArray(page)) {
       items.push(...page);
       break;
     }
-    const pageItems = page?.items || page?.data || [];
+    const pageItems = unwrapListResponse(page);
     items.push(...pageItems);
     cursor = page?.nextCursor || page?.next_cursor || undefined;
   } while (cursor && items.length < 2000);
@@ -653,7 +691,7 @@ async function discoverToolkit(query) {
   if (!best || bestScore < 3) return null;
 
   return {
-    slug: best.slug || best.name,
+    slug: getToolkitSlug(best.slug || best.name),
     name: best.name || best.slug,
     description: best.description || best.meta?.description || '',
     alreadyDefault: DEFAULT_TOOLKITS.includes((best.slug || '').toLowerCase())
@@ -1130,7 +1168,7 @@ async function getConnectionStatus(toolkit) {
     toolkitSlugs: [toolkit],
     userIds: [USER_ID]
   });
-  return connections?.items || [];
+  return unwrapListResponse(connections);
 }
 
 /**
@@ -1141,13 +1179,12 @@ async function getConnectedToolkitSlugs() {
   const composio = await getComposio();
   try {
     const accounts = await composio.connectedAccounts.list({ userIds: [USER_ID] });
-    const items = accounts?.items || [];
+    const items = unwrapListResponse(accounts);
     return new Set(
       items.filter(a => a.status === 'ACTIVE').map(a => {
-        const t = a.toolkit;
-        const slug = typeof t === 'string' ? t : (t?.slug || t?.name || a.appName || '');
-        return slug.toLowerCase();
+        return getToolkitSlug(a.toolkit) || getToolkitSlug(a.toolkitSlug) || getToolkitSlug(a.appName);
       })
+      .filter(Boolean)
     );
   } catch (e) {
     console.error('[Composio] Failed to list connected accounts:', e.message);
@@ -1161,7 +1198,7 @@ async function getConnectUrl(toolkit) {
   // The old SDK method toolkits.authorize() uses the retired POST /api/v3/connected_accounts
   // endpoint. Use connectedAccounts.link() with POST /api/v3/connected_accounts/link instead.
   const authConfigs = await composio.authConfigs.list({ toolkit });
-  let authConfigId = authConfigs?.items?.[0]?.id;
+  let authConfigId = unwrapListResponse(authConfigs)?.[0]?.id;
 
   if (!authConfigId) {
     const created = await composio.authConfigs.create(toolkit, {

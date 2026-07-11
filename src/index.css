@@ -738,6 +738,13 @@ select option {
   animation: fadeIn 0.25s ease-out;
 }
 
+.bubble .content {
+  white-space: break-spaces;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  tab-size: 2;
+}
+
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
@@ -821,7 +828,7 @@ select option {
 /* ---- Composer ---- */
 .composer {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 8px;
   margin: 0 12px 12px;
   padding: 10px 12px;
@@ -835,18 +842,36 @@ select option {
     0 4px 20px rgba(0, 0, 0, 0.2);
 }
 
-.composer input[type="text"] {
+.composer textarea {
   flex: 1;
+  min-height: 36px;
+  max-height: 160px;
   background: transparent;
   border: none;
   color: #fff;
   font-size: 14px;
   font-family: inherit;
+  line-height: 20px;
   padding: 8px 12px;
   outline: none;
+  resize: none;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  tab-size: 2;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
 
-.composer input[type="text"]::placeholder {
+.composer textarea::-webkit-scrollbar {
+  width: 4px;
+}
+
+.composer textarea::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.18);
+  border-radius: 2px;
+}
+
+.composer textarea::placeholder {
   color: rgba(255, 255, 255, 0.35);
 }
 
@@ -968,7 +993,7 @@ select option {
   flex: 1;
   background: transparent;
   border: none;
-  color: rgba(255, 259, 48, 0.8);
+  color: rgba(255, 255, 255, 0.8);
   font-size: 14px;
   font-family: inherit;
   padding: 8px 12px;

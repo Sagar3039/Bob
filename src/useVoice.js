@@ -2,6 +2,45 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 const api = window.assistantAPI;
 
+const RECORDER_MIME_TYPES = [
+  'audio/webm;codecs=opus',
+  'audio/webm',
+  'audio/ogg;codecs=opus',
+  'audio/mp4'
+];
+
+const NON_SPEECH_CAPTIONS = new Set([
+  'applause', 'breathing', 'clapping', 'gunfire', 'laughter', 'laughs',
+  'music', 'noise', 'silence', 'sound', 'static', 'typing'
+]);
+
+function getSupportedRecorderMimeType() {
+  if (typeof MediaRecorder === 'undefined') return '';
+  return RECORDER_MIME_TYPES.find(type => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function normalizeTranscript(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .trim();
+}
+
+function getRejectedTranscriptReason(text) {
+  const normalized = normalizeTranscript(text);
+  if (!normalized) return '';
+
+  const caption = normalized.match(/^\[([^\]]+)\]$/);
+  if (!caption) return '';
+
+  const captionText = caption[1].trim().toLowerCase();
+  if (NON_SPEECH_CAPTIONS.has(captionText) || !/[a-z0-9]/i.test(captionText)) {
+    return `Ignored non-speech caption: ${normalized}`;
+  }
+
+  return '';
+}
+
 /**
  * Provides mic-based speech-to-text (local Whisper STT via main process)
  * and text-to-speech using either system voices or Microsoft Edge TTS.
@@ -32,13 +71,15 @@ export function useVoice() {
   const audioRef = useRef(null);
   const audioQueueRef = useRef([]);
   const isPlayingRef = useRef(false);
+  const playbackGenerationRef = useRef(0);
   const sentenceBufferRef = useRef('');
   const streamingModeRef = useRef(false);
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
   const audioChunksRef = useRef([]);
-  const resolveListenRef = useRef(null);
+  const listenPromiseRef = useRef(null);
   const rejectListenRef = useRef(null);
+  const autoStopTimerRef = useRef(null);
 
   // ─── Sentence Splitting ───────────────────────────────────────────
 
@@ -49,6 +90,8 @@ export function useVoice() {
   function cleanForSpeech(text) {
     if (!text) return '';
     return text
+      // Never speak raw tool-call directives (e.g. [TOOL_CALL: GMAIL_SEND_EMAIL({...})]).
+      .replace(/\[TOOL_CALL:[\s\S]*?\)\s*\]/g, '')
       .replace(/[\u{1F600}-\u{1F64F}]/gu, '')   // Emoticons
       .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')   // Misc Symbols & Pictographs
       .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')   // Transport & Map
@@ -138,6 +181,7 @@ export function useVoice() {
   const speakEdge = useCallback(async (text) => {
     const clean = cleanForSpeech(text);
     if (!api?.tts || !clean) return;
+    const generation = playbackGenerationRef.current;
     setSpeaking(true);
     try {
       const rateStr = edgeRate >= 0 ? `+${edgeRate}%` : `${edgeRate}%`;
@@ -149,7 +193,7 @@ export function useVoice() {
         pitch: pitchStr
       });
 
-      if (!audioBase64) { setSpeaking(false); return; }
+      if (!audioBase64 || generation !== playbackGenerationRef.current) { setSpeaking(false); return; }
 
       // Queue and play
       audioQueueRef.current.push({ audioBase64, onDone: null });
@@ -165,6 +209,7 @@ export function useVoice() {
   const speakChunk = useCallback(async (text) => {
     const clean = cleanForSpeech(text);
     if (!api?.tts || !clean) return;
+    const generation = playbackGenerationRef.current;
     try {
       const rateStr = edgeRate >= 0 ? `+${edgeRate}%` : `${edgeRate}%`;
       const pitchStr = edgePitch >= 0 ? `+${edgePitch}Hz` : `${edgePitch}Hz`;
@@ -175,7 +220,7 @@ export function useVoice() {
         pitch: pitchStr
       });
 
-      if (audioBase64) {
+      if (audioBase64 && generation === playbackGenerationRef.current) {
         audioQueueRef.current.push({ audioBase64, onDone: null });
         processQueue();
       }
@@ -188,6 +233,11 @@ export function useVoice() {
     if (!text.trim()) return;
     sentenceBufferRef.current += text;
     while (true) {
+      // If a tool-call directive has started but not yet closed, keep
+      // buffering so we never speak a half-written [TOOL_CALL: ...] marker
+      // (its JSON payload can contain '.' which would trip the splitter).
+      const open = sentenceBufferRef.current.indexOf('[TOOL_CALL:');
+      if (open !== -1 && !/\[TOOL_CALL:[\s\S]*?\)\s*\]/.test(sentenceBufferRef.current)) break;
       const result = extractSentence(sentenceBufferRef.current);
       if (!result) break; // Still buffering
       sentenceBufferRef.current = result.remaining;
@@ -204,6 +254,7 @@ export function useVoice() {
   }, [speakChunk]);
 
   const clearQueue = useCallback(() => {
+    playbackGenerationRef.current += 1;
     audioQueueRef.current = [];
     isPlayingRef.current = false;
     sentenceBufferRef.current = '';
@@ -247,6 +298,15 @@ export function useVoice() {
   // ─── Voice loading ────────────────────────────────────────────────
 
   useEffect(() => {
+    const supported = Boolean(
+      navigator.mediaDevices?.getUserMedia &&
+      typeof MediaRecorder !== 'undefined' &&
+      (getSupportedRecorderMimeType() || !MediaRecorder.isTypeSupported)
+    );
+    setVoiceSupported(supported);
+  }, []);
+
+  useEffect(() => {
     const loadVoices = () => {
       const available = window.speechSynthesis?.getVoices() || [];
       const englishVoices = available.filter(v => v.lang.startsWith('en'));
@@ -288,74 +348,76 @@ export function useVoice() {
   async function webmToWav(blob) {
     const arrayBuffer = await blob.arrayBuffer();
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
+    try {
+      const decodedBuffer = await audioCtx.decodeAudioData(arrayBuffer);
 
-    // Resample to 16kHz using OfflineAudioContext
-    const targetRate = 16000;
-    const duration = decodedBuffer.duration;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetRate), targetRate);
+      // Resample to 16kHz using OfflineAudioContext
+      const targetRate = 16000;
+      const duration = decodedBuffer.duration;
+      if (!duration || duration < 0.2) {
+        throw new Error('Recording was too short.');
+      }
 
-    // Create source from decoded buffer
-    const source = offlineCtx.createBufferSource();
-    source.buffer = decodedBuffer;
+      const offlineCtx = new OfflineAudioContext(1, Math.ceil(duration * targetRate), targetRate);
 
-    // Create gain node to boost volume
-    const gain = offlineCtx.createGain();
-    gain.gain.value = 2.0; // Boost gain
+      const source = offlineCtx.createBufferSource();
+      source.buffer = decodedBuffer;
 
-    source.connect(gain);
-    gain.connect(offlineCtx.destination);
-    source.start(0);
+      const gain = offlineCtx.createGain();
+      gain.gain.value = 2.0;
 
-    const resampledBuffer = await offlineCtx.startRendering();
+      source.connect(gain);
+      gain.connect(offlineCtx.destination);
+      source.start(0);
 
-    // Get the resampled mono data
-    const samples = resampledBuffer.getChannelData(0);
+      const resampledBuffer = await offlineCtx.startRendering();
+      const samples = resampledBuffer.getChannelData(0);
 
-    // Normalize: find peak and scale
-    let peak = 0;
-    for (let i = 0; i < samples.length; i++) {
-      const abs = Math.abs(samples[i]);
-      if (abs > peak) peak = abs;
+      let peak = 0;
+      for (let i = 0; i < samples.length; i++) {
+        const abs = Math.abs(samples[i]);
+        if (abs > peak) peak = abs;
+      }
+      if (peak < 0.005) {
+        throw new Error('No speech detected. Check your microphone input level.');
+      }
+      const scale = 0.9 / peak;
+
+      const numChannels = 1;
+      const sampleRate = targetRate;
+      const length = samples.length;
+      const bytesPerSample = 2;
+      const blockAlign = numChannels * bytesPerSample;
+      const dataSize = length * blockAlign;
+      const bufferSize = 44 + dataSize;
+      const buffer = new ArrayBuffer(bufferSize);
+      const view = new DataView(buffer);
+
+      writeString(view, 0, 'RIFF');
+      view.setUint32(4, bufferSize - 8, true);
+      writeString(view, 8, 'WAVE');
+      writeString(view, 12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * blockAlign, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true);
+      writeString(view, 36, 'data');
+      view.setUint32(40, dataSize, true);
+
+      let offset = 44;
+      for (let i = 0; i < length; i++) {
+        const sample = Math.max(-1, Math.min(1, samples[i] * scale));
+        view.setInt16(offset, sample * 0x7FFF, true);
+        offset += 2;
+      }
+
+      return new Blob([buffer], { type: 'audio/wav' });
+    } finally {
+      audioCtx.close();
     }
-    const scale = peak > 0 ? 0.9 / peak : 1.0;
-
-    // Encode as 16-bit PCM WAV (mono, 16kHz)
-    const numChannels = 1;
-    const sampleRate = targetRate;
-    const length = samples.length;
-    const bytesPerSample = 2;
-    const blockAlign = numChannels * bytesPerSample;
-    const dataSize = length * blockAlign;
-    const bufferSize = 44 + dataSize;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-
-    // WAV header
-    writeString(view, 0, 'RIFF');
-    view.setUint32(4, bufferSize - 8, true);
-    writeString(view, 8, 'WAVE');
-    writeString(view, 12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);  // PCM format
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * blockAlign, true);
-    view.setUint16(32, blockAlign, true);
-    view.setUint16(34, 16, true);
-    writeString(view, 36, 'data');
-    view.setUint32(40, dataSize, true);
-
-    // Write normalized mono PCM samples
-    let offset = 44;
-    for (let i = 0; i < length; i++) {
-      const sample = Math.max(-1, Math.min(1, samples[i] * scale));
-      view.setInt16(offset, sample * 0x7FFF, true);
-      offset += 2;
-    }
-
-    audioCtx.close();
-    return new Blob([buffer], { type: 'audio/wav' });
   }
 
   function writeString(view, offset, str) {
@@ -392,7 +454,14 @@ export function useVoice() {
 
       const result = await api.stt.transcribe(base64);
       setTranscribing(false);
-      return result?.text?.trim() || '';
+      const text = normalizeTranscript(result?.text);
+      const rejectedReason = result?.rejectedReason || getRejectedTranscriptReason(text);
+      if (rejectedReason) {
+        const err = new Error(rejectedReason);
+        err.name = 'NonSpeechCaptionError';
+        throw err;
+      }
+      return text;
     } catch (err) {
       setTranscribing(false);
       throw err;
@@ -400,15 +469,35 @@ export function useVoice() {
   }, []);
 
   const listen = useCallback(() => {
-    return new Promise(async (resolve, reject) => {
+    if (listenPromiseRef.current) return listenPromiseRef.current;
+
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      return Promise.reject(new Error('Voice input is not supported in this build.'));
+    }
+
+    const mimeType = getSupportedRecorderMimeType();
+    if (!mimeType && MediaRecorder.isTypeSupported) {
+      return Promise.reject(new Error('No supported microphone recording format is available.'));
+    }
+
+    const promise = new Promise(async (resolve, reject) => {
       let stream = null;
+      rejectListenRef.current = reject;
 
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
         streamRef.current = stream;
         setListening(true);
 
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+        const recorderOptions = mimeType ? { mimeType } : undefined;
+        const mediaRecorder = new MediaRecorder(stream, recorderOptions);
         mediaRecorderRef.current = mediaRecorder;
         audioChunksRef.current = [];
 
@@ -417,9 +506,15 @@ export function useVoice() {
         };
 
         mediaRecorder.onstop = async () => {
+          if (autoStopTimerRef.current) {
+            clearTimeout(autoStopTimerRef.current);
+            autoStopTimerRef.current = null;
+          }
           stream.getTracks().forEach(t => t.stop());
           streamRef.current = null;
           mediaRecorderRef.current = null;
+          listenPromiseRef.current = null;
+          rejectListenRef.current = null;
 
           if (audioChunksRef.current.length === 0) {
             setListening(false);
@@ -427,7 +522,7 @@ export function useVoice() {
             return;
           }
 
-          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+          const audioBlob = new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || mimeType || 'audio/webm' });
           audioChunksRef.current = [];
 
           try {
@@ -443,7 +538,7 @@ export function useVoice() {
         };
 
         // Auto-stop after 30 seconds
-        setTimeout(() => {
+        autoStopTimerRef.current = setTimeout(() => {
           if (mediaRecorder.state === 'recording') {
             mediaRecorder.stop();
           }
@@ -452,12 +547,19 @@ export function useVoice() {
         mediaRecorder.start(100); // collect in 100ms chunks
       } catch (err) {
         setListening(false);
+        listenPromiseRef.current = null;
+        rejectListenRef.current = null;
         stream?.getTracks().forEach(t => t.stop());
         streamRef.current = null;
         mediaRecorderRef.current = null;
-        reject(new Error('Microphone access denied or unavailable.'));
+        const message = err?.name === 'NotAllowedError'
+          ? 'Microphone permission was denied.'
+          : (err?.message || 'Microphone access denied or unavailable.');
+        reject(new Error(message));
       }
     });
+    listenPromiseRef.current = promise;
+    return promise;
   }, [startTranscribe]);
 
   // Stop recording and send audio for transcription
@@ -469,6 +571,10 @@ export function useVoice() {
 
   // Cancel recording without transcribing
   const cancelRecording = useCallback(() => {
+    if (autoStopTimerRef.current) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
     audioChunksRef.current = [];
     if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.onstop = null;
@@ -479,6 +585,14 @@ export function useVoice() {
       streamRef.current = null;
     }
     mediaRecorderRef.current = null;
+    listenPromiseRef.current = null;
+    const reject = rejectListenRef.current;
+    rejectListenRef.current = null;
+    if (reject) {
+      const err = new Error('Recording cancelled.');
+      err.name = 'AbortError';
+      reject(err);
+    }
     setListening(false);
   }, []);
 

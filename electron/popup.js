@@ -197,6 +197,7 @@ const PREFERRED_SPLIT = 200;
 function cleanForSpeech(text) {
   if (!text) return '';
   return text
+    .replace(/\[TOOL_CALL:[\s\S]*?\)\s*\]/g, '')
     .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
     .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
     .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
@@ -242,6 +243,10 @@ function pushChunk(text) {
   if (!text.trim() || !voiceOn) return;
   sentenceBuffer += text;
   while (true) {
+    // Hold the buffer while an unclosed [TOOL_CALL: ...] directive is forming
+    // so the marker is never spoken aloud.
+    const open = sentenceBuffer.indexOf('[TOOL_CALL:');
+    if (open !== -1 && !/\[TOOL_CALL:[\s\S]*?\)\s*\]/.test(sentenceBuffer)) break;
     const result = extractSentence(sentenceBuffer);
     if (!result) break;
     sentenceBuffer = result.remaining;
@@ -358,6 +363,7 @@ window.electronAPI.onChunk((data) => {
     const full = responseEl.dataset.full || '';
     responseEl.dataset.full = full + resultText;
     const display = responseEl.dataset.full
+      .replace(/\[TOOL_CALL:[\s\S]*?\)\s*\]/g, '')
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/`([^`]+)`/g, '$1')
       .replace(/^#{1,6}\s+/gm, '')
@@ -370,6 +376,7 @@ window.electronAPI.onChunk((data) => {
     const full = (responseEl.dataset.full || '') + data.text;
     responseEl.dataset.full = full;
     const display = full
+      .replace(/\[TOOL_CALL:[\s\S]*?\)\s*\]/g, '')
       .replace(/\*\*(.*?)\*\*/g, '$1')
       .replace(/`([^`]+)`/g, '$1')
       .replace(/^#{1,6}\s+/gm, '')

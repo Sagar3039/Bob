@@ -3,6 +3,13 @@ import { isOllamaRunning, startOllama, listModels, getRunningModels, pullModel, 
 import { useVoice } from './useVoice.js';
 import { formatToolResultWithHeader } from './formatToolResult.js';
 
+// Remove [TOOL_CALL: NAME({...})] directives so they never render in the
+// chat bubble — they are machine instructions, not part of the reply.
+function stripToolCalls(text) {
+  if (!text) return text;
+  return text.replace(/\[TOOL_CALL:[\s\S]*?\)\s*\]/g, '').replace(/\n{3,}/g, '\n\n').trim();
+}
+
 function stripHtml(html) {
   if (!html) return html;
   return html
@@ -207,6 +214,16 @@ Help people become smarter, more disciplined, more skilled, more independent, an
 
 const DEFAULT_MODEL = 'gemma4:31b-cloud';
 const WELCOME_MSG = { role: 'assistant', content: "Hey. What are we working on?" };
+
+// Single source of truth for the default personality so /reset restores the
+// exact same values the app starts with.
+const DEFAULT_PERSONALITY = {
+  name: 'Bob',
+  tone: 'warm, calm, confident — like a real friend',
+  style: 'direct, honest, no fluff — challenges when needed, supports when needed',
+  emoji: false,
+  custom: ''
+};
 
 function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -420,13 +437,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState('general');
 
   // Personality state
-  const [personality, setPersonality] = useState({
-    name: 'Bob',
-    tone: 'warm, calm, confident — like a real friend',
-    style: 'direct, honest, no fluff — challenges when needed, supports when needed',
-    emoji: false,
-    custom: ''
-  });
+  const [personality, setPersonality] = useState(DEFAULT_PERSONALITY);
 
   // Command autocomplete
   const COMMANDS = [
@@ -513,10 +524,7 @@ export default function App() {
   async function handleConnectToolkit(slug) {
     if (!api?.composio?.startConnect) return;
     try {
-      const result = await api.composio.startConnect(slug);
-      if (result?.url) {
-        window.open(result.url, '_blank');
-      }
+      await api.composio.startConnect(slug);
       // Wait a moment then refresh
       setTimeout(fetchConnectors, 3000);
     } catch (e) {
@@ -606,12 +614,27 @@ export default function App() {
 
   const deleteSession = useCallback((id, e) => {
     e.stopPropagation();
-    setSessions(prev => prev.filter(s => s.id !== id));
     if (currentSessionId === id) {
-      setCurrentSessionId(null);
+      // Deleting the active chat — drop it and immediately start a fresh one
+      // so the app never lands in a "no current session" state where new
+      // messages silently fail to persist.
+      clearQueue();
+      const newId = generateId();
+      const newSession = {
+        id: newId,
+        title: 'New Chat',
+        messages: [WELCOME_MSG],
+        model: selectedModel,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      setSessions(prev => [newSession, ...prev.filter(s => s.id !== id)]);
+      setCurrentSessionId(newId);
       setMessages([WELCOME_MSG]);
+    } else {
+      setSessions(prev => prev.filter(s => s.id !== id));
     }
-  }, [currentSessionId]);
+  }, [currentSessionId, selectedModel, clearQueue]);
 
   const renameSession = useCallback((id, e) => {
     e.stopPropagation();
@@ -760,14 +783,14 @@ export default function App() {
         return `Custom instruction set: "${val}"`;
       },
       '/reset': () => {
-        setPersonality({ name: 'Bob', tone: 'JARVIS-inspired, brutally honest best friend', style: 'direct, no corporate fluff, talk like a smart friend', emoji: false, custom: '' });
+        setPersonality(DEFAULT_PERSONALITY);
         return 'Personality reset to default.';
       },
       '/personality': () => {
         return `Current personality:\n- Name: ${personality.name}\n- Tone: ${personality.tone}\n- Style: ${personality.style}\n- Emoji: ${personality.emoji ? 'on' : 'off'}\n- Custom: ${personality.custom || '(none)'}\n\nCommands:\n/name <name> — Change name\n/tone <tone> — Change tone\n/style <style> — Change style\n/emoji on|off — Toggle emoji\n/set <instruction> — Set custom instruction\n/reset — Reset to default`;
       },
       '/help': () => {
-        return 'Commands:\n/personality — View and edit personality\n/name <name> — Change name\n/tone <tone> — Change tone\n/style <style> — Change style\n/emoji on|off — Toggle emoji\n/set <instruction> — Set custom instruction\n/reset — Reset personality\n/clear — Clear current conversation\n模型 — Show current model info';
+        return 'Commands:\n/personality — View and edit personality\n/name <name> — Change name\n/tone <tone> — Change tone\n/style <style> — Change style\n/emoji on|off — Toggle emoji\n/set <instruction> — Set custom instruction\n/reset — Reset personality\n/clear — Clear current conversation';
       },
       '/clear': () => {
         setMessages([WELCOME_MSG]);
@@ -1038,6 +1061,8 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
       const transcript = await listen();
       if (transcript) sendMessage(transcript);
     } catch (e) {
+      if (e.name === 'AbortError') return;
+      if (e.name === 'NonSpeechCaptionError') return;
       setError(e.message || 'Microphone error.');
     }
   }
@@ -1069,6 +1094,17 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
     sendMessage(input);
   }
 
+  function resizeComposerInput() {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }
+
+  useEffect(() => {
+    resizeComposerInput();
+  }, [input]);
+
   const filteredCommands = showCmds
     ? COMMANDS.filter(c => c.cmd.startsWith(cmdFilter.toLowerCase()))
     : [];
@@ -1084,8 +1120,9 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
   function handleInputChange(e) {
     const val = e.target.value;
     setInput(val);
-    if (val.startsWith('/')) {
-      setCmdFilter(val.split(' ')[0]);
+    const firstLine = val.split('\n')[0];
+    if (firstLine.startsWith('/') && !firstLine.includes(' ')) {
+      setCmdFilter(firstLine);
       setShowCmds(true);
       setCmdIdx(0);
     } else {
@@ -1093,19 +1130,51 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
     }
   }
 
+  function handleComposerPaste(e) {
+    const pastedText = e.clipboardData?.getData('text/plain');
+    if (!pastedText) return;
+
+    e.preventDefault();
+    const textarea = e.currentTarget;
+    const start = textarea.selectionStart ?? input.length;
+    const end = textarea.selectionEnd ?? input.length;
+    const normalizedText = pastedText.replace(/\r\n?/g, '\n');
+    const nextValue = input.slice(0, start) + normalizedText + input.slice(end);
+    const cursor = start + normalizedText.length;
+
+    setInput(nextValue);
+    requestAnimationFrame(() => {
+      textarea.selectionStart = cursor;
+      textarea.selectionEnd = cursor;
+      resizeComposerInput();
+    });
+  }
+
   function handleInputKeyDown(e) {
-    if (!showCmds || filteredCommands.length === 0) return;
-    if (e.key === 'ArrowDown') {
+    if (showCmds && filteredCommands.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCmdIdx(i => (i + 1) % filteredCommands.length);
+        return;
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCmdIdx(i => (i - 1 + filteredCommands.length) % filteredCommands.length);
+        return;
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        selectCommand(filteredCommands[cmdIdx].cmd);
+        return;
+      } else if (e.key === 'Escape') {
+        setShowCmds(false);
+        return;
+      }
+    }
+
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      setCmdIdx(i => (i + 1) % filteredCommands.length);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setCmdIdx(i => (i - 1 + filteredCommands.length) % filteredCommands.length);
-    } else if (e.key === 'Tab') {
-      e.preventDefault();
-      selectCommand(filteredCommands[cmdIdx].cmd);
-    } else if (e.key === 'Escape') {
-      setShowCmds(false);
+      if (input.trim() && selectedModel && !isThinking) {
+        sendMessage(input);
+      }
     }
   }
 
@@ -1395,7 +1464,7 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
         {messages.map((m, i) => (
           <div key={i} className={`bubble ${m.role}`}>
             <div className="role">{m.role === 'user' ? 'You' : 'Assistant'}</div>
-            <div className="content">{(m.role === 'assistant' ? stripHtml(m.content) : m.content) || (isThinking && i === messages.length - 1 ? '…' : '')}</div>
+            <div className="content">{(m.role === 'assistant' ? stripToolCalls(stripHtml(m.content)) : m.content) || (isThinking && i === messages.length - 1 ? '…' : '')}</div>
             {m.role === 'assistant' && m.content && (
               <button
                 className={`copy-btn ${copiedMsgId === i ? 'copied' : ''}`}
@@ -1464,14 +1533,16 @@ Use this to reference "today", "tomorrow", "yesterday", schedule posts, set due 
               >
                 {transcribing ? '⏳' : '🎤'}
               </button>
-              <input
+              <textarea
                 ref={inputRef}
-                type="text"
                 value={input}
                 onChange={handleInputChange}
+                onPaste={handleComposerPaste}
                 onKeyDown={handleInputKeyDown}
+                rows={1}
                 placeholder={selectedModel ? 'Type a message… (try / for commands)' : 'Load a model first'}
                 disabled={!selectedModel}
+                title="Press Shift+Enter for a new line"
               />
               {speaking && (
                 <button type="button" className="stop" onClick={stopSpeaking} title="Stop speaking">■</button>

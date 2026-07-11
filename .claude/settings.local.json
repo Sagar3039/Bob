@@ -5,7 +5,11 @@
       "Bash(ls node_modules/.bin/vite)",
       "Bash(ls node_modules/.bin/electron*)",
       "Bash(grep -qE \"Toolkit summary loaded|ready in|VITE|Error|EADDRINUSE|Failed|Composio\" dev.log)",
-      "Bash(break)"
+      "Bash(break)",
+      "Bash(node --check electron/composio.js)",
+      "Bash(node --check electron/main.js)",
+      "Bash(node --check electron/popup.js)",
+      "Bash(node --check src/ollama.js)"
     ]
   }
 }

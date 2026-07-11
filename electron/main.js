@@ -647,7 +647,7 @@ ipcMain.handle('popup:chat', async (event, query, model) => {
     const summary = cachedToolkitSummary && cachedToolkitSummary.length > 0
       ? cachedToolkitSummary
       : DEFAULT_TOOLKITS.map(tk => ({ toolkit: tk }));
-    toolPrompt = composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit })));
+    toolPrompt = composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit, toolCount: s.toolCount })));
   } catch (e) {
     console.error('[Composio] Failed to build tool prompt:', e.message);
   }
@@ -870,7 +870,7 @@ ipcMain.handle('composio:buildPrompt', async () => {
   const summary = cachedToolkitSummary && cachedToolkitSummary.length > 0
     ? cachedToolkitSummary
     : DEFAULT_TOOLKITS.map(tk => ({ toolkit: tk }));
-  return composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit })));
+  return composio.buildToolPrompt(summary.map(s => ({ toolkit: s.name || s.toolkit, toolCount: s.toolCount })));
 });
 
 ipcMain.handle('composio:execute', async (_, toolName, args) => {
@@ -958,17 +958,55 @@ ipcMain.handle('composio:allConnectors', async () => {
 let whisperPipeline = null;
 
 function parseWavToFloat32(buffer) {
-  // Parse WAV header
-  const header = buffer.slice(0, 44);
-  const numChannels = header.readUInt16LE(22);
-  const sampleRate = header.readUInt32LE(24);
-  const bitsPerSample = header.readUInt16LE(34);
-  const bytesPerSample = bitsPerSample / 8;
-  const dataOffset = 44; // Standard WAV header is 44 bytes
+  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('Invalid WAV audio received.');
+  }
 
-  const pcmData = buffer.slice(dataOffset);
+  let offset = 12;
+  let fmt = null;
+  let dataOffset = -1;
+  let dataSize = 0;
+
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString('ascii', offset, offset + 4);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+    const chunkDataOffset = offset + 8;
+
+    if (chunkId === 'fmt ') {
+      fmt = {
+        audioFormat: buffer.readUInt16LE(chunkDataOffset),
+        numChannels: buffer.readUInt16LE(chunkDataOffset + 2),
+        sampleRate: buffer.readUInt32LE(chunkDataOffset + 4),
+        bitsPerSample: buffer.readUInt16LE(chunkDataOffset + 14)
+      };
+    } else if (chunkId === 'data') {
+      dataOffset = chunkDataOffset;
+      dataSize = chunkSize;
+      break;
+    }
+
+    offset = chunkDataOffset + chunkSize + (chunkSize % 2);
+  }
+
+  if (!fmt || dataOffset < 0) {
+    throw new Error('WAV audio is missing required fmt or data chunks.');
+  }
+
+  const { audioFormat, numChannels, sampleRate, bitsPerSample } = fmt;
+  if (audioFormat !== 1 || bitsPerSample !== 16) {
+    throw new Error(`Unsupported WAV format: ${bitsPerSample}-bit format ${audioFormat}.`);
+  }
+
+  const bytesPerSample = bitsPerSample / 8;
+
+  const pcmData = buffer.slice(dataOffset, Math.min(buffer.length, dataOffset + dataSize));
   const numSamples = Math.floor(pcmData.length / (numChannels * bytesPerSample));
+  if (numSamples === 0) {
+    throw new Error('No audio samples were recorded.');
+  }
   const float32 = new Float32Array(numSamples);
+  let sumSquares = 0;
+  let peak = 0;
 
   for (let i = 0; i < numSamples; i++) {
     const offset = i * numChannels * bytesPerSample;
@@ -980,9 +1018,54 @@ function parseWavToFloat32(buffer) {
       sum += sample / 32768.0;
     }
     float32[i] = sum / numChannels;
+    const abs = Math.abs(float32[i]);
+    if (abs > peak) peak = abs;
+    sumSquares += float32[i] * float32[i];
   }
 
-  return { audio: float32, sampleRate };
+  const duration = numSamples / sampleRate;
+  const rms = Math.sqrt(sumSquares / numSamples);
+
+  return { audio: float32, sampleRate, duration, peak, rms };
+}
+
+function normalizeTranscript(text) {
+  return (text || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .trim();
+}
+
+function isLikelyWhisperCaption(text) {
+  const normalized = normalizeTranscript(text).toLowerCase();
+  if (!normalized) return true;
+
+  const captionPattern = /^\[([^\]]+)\]$/;
+  const match = normalized.match(captionPattern);
+  if (!match) return false;
+
+  const caption = match[1].trim();
+  const nonSpeechCaptions = new Set([
+    'applause', 'breathing', 'clapping', 'gunfire', 'laughter', 'laughs',
+    'music', 'noise', 'silence', 'sound', 'static', 'typing'
+  ]);
+
+  return nonSpeechCaptions.has(caption) || !/[a-z0-9]/i.test(caption);
+}
+
+function shouldRejectTranscript(text, audioStats) {
+  const normalized = normalizeTranscript(text);
+  if (!normalized) return 'No speech recognized.';
+  if (isLikelyWhisperCaption(normalized)) return `Ignored non-speech caption: ${normalized}`;
+
+  // Very quiet recordings make Whisper more likely to hallucinate a plausible
+  // caption or phrase. Keep the threshold conservative so soft real speech
+  // still gets through.
+  if (audioStats.rms < 0.0015 && normalized.length < 20) {
+    return 'Recording level was too low to transcribe reliably.';
+  }
+
+  return '';
 }
 
 ipcMain.handle('stt:transcribe', async (_, audioBase64) => {
@@ -999,17 +1082,29 @@ ipcMain.handle('stt:transcribe', async (_, audioBase64) => {
 
     // Decode base64 WAV audio
     const wavBuffer = Buffer.from(audioBase64, 'base64');
-    const { audio } = parseWavToFloat32(wavBuffer);
+    const { audio, sampleRate, duration, peak, rms } = parseWavToFloat32(wavBuffer);
 
-    console.log('[STT] Audio length:', audio.length, 'samples');
-
-    // Pass raw Float32Array directly to the pipeline
+    console.log('[STT] Audio length:', audio.length, 'samples at', sampleRate, 'Hz', {
+      duration: duration.toFixed(2),
+      peak: peak.toFixed(4),
+      rms: rms.toFixed(4)
+    });
+    // Pass raw Float32Array directly to the pipeline.
     const result = await whisperPipeline(audio, {
       language: 'en',
-      task: 'transcribe'
+      task: 'transcribe',
+      chunk_length_s: 15,
+      stride_length_s: 2
     });
 
-    return { text: result?.text?.trim() || '' };
+    const text = normalizeTranscript(result?.text);
+    const rejectedReason = shouldRejectTranscript(text, { duration, peak, rms });
+    if (rejectedReason) {
+      console.warn('[STT] Rejected transcript:', rejectedReason);
+      return { text: '', rejectedReason };
+    }
+
+    return { text };
   } catch (e) {
     console.error('[STT] Transcription error:', e.message);
     throw e;
@@ -1091,7 +1186,8 @@ ipcMain.handle('shell:exec', async (_, { command, cwd, timeout }) => {
   try {
     const maxTimeout = Math.min(timeout || 30000, 120000);
     const workDir = cwd && isPathAllowed(cwd) ? cwd : app.getPath('home');
-    const { stdout, stderr } = await execFileAsync('powershell', ['-NoProfile', '-Command', command], {
+    const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
+    const { stdout, stderr } = await execFileAsync('powershell', ['-NoProfile', '-EncodedCommand', encodedCommand], {
       cwd: workDir,
       timeout: maxTimeout,
       maxBuffer: 1024 * 1024
